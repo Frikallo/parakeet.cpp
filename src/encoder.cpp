@@ -1,6 +1,4 @@
-#include "../include/parakeet.hpp"
-
-#include <iostream>
+#include "parakeet/encoder.hpp"
 
 namespace parakeet {
 
@@ -117,40 +115,4 @@ Tensor FastConformerEncoder::forward(const Tensor &input,
     return x;
 }
 
-// ─── CTCDecoder ─────────────────────────────────────────────────────────────
-
-CTCDecoder::CTCDecoder() : proj_(true) { AX_REGISTER_MODULE(proj_); }
-
-Tensor CTCDecoder::forward(const Tensor &input) const {
-    return ops::log_softmax(proj_(input), /*axis=*/-1);
-}
-
-// ─── ParakeetCTC ────────────────────────────────────────────────────────────
-
-ParakeetCTC::ParakeetCTC(const ParakeetConfig &config) : config_(config) {
-    AX_REGISTER_MODULES(encoder_, decoder_);
-}
-
-Tensor ParakeetCTC::forward(const Tensor &input, const Tensor &mask) const {
-    return decoder_(encoder_(input, mask));
-}
-
 } // namespace parakeet
-
-int main() {
-    using namespace parakeet;
-
-    ParakeetConfig config;
-    ParakeetCTC model(config);
-
-    std::cout << "Parakeet CTC model created" << std::endl;
-    std::cout << "  Encoder: FastConformer" << std::endl;
-    std::cout << "  Layers: " << config.num_layers << std::endl;
-    std::cout << "  Hidden size: " << config.hidden_size << std::endl;
-    std::cout << "  Attention heads: " << config.num_heads << std::endl;
-    std::cout << "  FFN intermediate: " << config.ffn_intermediate << std::endl;
-    std::cout << "  Conv kernel: " << config.conv_kernel_size << std::endl;
-    std::cout << "  Vocab size: " << config.vocab_size << std::endl;
-
-    return 0;
-}

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(Parakeet
-    VERSION 0.0.1
+    VERSION 0.1.0
     DESCRIPTION "Portable Parakeet Inference Engine"
     LANGUAGES CXX
 )
@@ -18,9 +18,21 @@ set(AXIOM_BUILD_EXAMPLES OFF)
 set(AXIOM_BUILD_BENCHMARKS OFF)
 add_subdirectory(third_party/axiom)
 
-add_executable(parakeet src/parakeet.cpp)
-target_link_libraries(parakeet PRIVATE Axiom::axiom)
-target_include_directories(parakeet PRIVATE include)
+# Parakeet library
+add_library(parakeet_lib STATIC
+    src/encoder.cpp
+    src/lstm.cpp
+    src/ctc.cpp
+    src/rnnt.cpp
+    src/tdt.cpp
+    src/tdt_ctc.cpp
+)
+target_link_libraries(parakeet_lib PUBLIC Axiom::axiom)
+target_include_directories(parakeet_lib PUBLIC include)
 
-install(TARGETS parakeet DESTINATION bin)
+# Demo binary
+add_executable(parakeet src/main.cpp)
+target_link_libraries(parakeet PRIVATE parakeet_lib)
+
+install(TARGETS parakeet parakeet_lib DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)

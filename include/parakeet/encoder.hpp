@@ -3,26 +3,12 @@
 #include <axiom/axiom.hpp>
 #include <axiom/nn.hpp>
 
+#include "parakeet/config.hpp"
+
 namespace parakeet {
 
 using namespace axiom;
 using namespace axiom::nn;
-
-// ─── Model Config ───────────────────────────────────────────────────────────
-
-struct ParakeetConfig {
-    int mel_bins = 80;
-    int subsampling_factor = 8;
-    int subsampling_channels = 256;
-    int hidden_size = 1024;
-    int num_layers = 24;
-    int num_heads = 8;
-    int ffn_intermediate = 4096;
-    int conv_kernel_size = 9;
-    int vocab_size = 1025; // 1024 tokens + 1 blank/pad
-    float dropout = 0.1f;
-    float layer_norm_eps = 1e-5f;
-};
 
 // ─── Feed-Forward Module (Macaron-style half-step) ──────────────────────────
 
@@ -128,40 +114,6 @@ class FastConformerEncoder : public Module {
   private:
     ConvSubsampling subsampling_;
     ModuleList layers_;
-};
-
-// ─── CTC Decoder Head ──────────────────────────────────────────────────────
-
-class CTCDecoder : public Module {
-  public:
-    CTCDecoder();
-
-    // (batch, seq, hidden_size) → (batch, seq, vocab_size) log probs
-    Tensor forward(const Tensor &input) const;
-    Tensor operator()(const Tensor &input) const { return forward(input); }
-
-  private:
-    Linear proj_;
-};
-
-// ─── Parakeet CTC Model ────────────────────────────────────────────────────
-
-class ParakeetCTC : public Module {
-  public:
-    explicit ParakeetCTC(const ParakeetConfig &config = {});
-
-    Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
-    Tensor operator()(const Tensor &input,
-                      const Tensor &mask = Tensor()) const {
-        return forward(input, mask);
-    }
-
-    const ParakeetConfig &config() const { return config_; }
-
-  private:
-    ParakeetConfig config_;
-    FastConformerEncoder encoder_;
-    CTCDecoder decoder_;
 };
 
 } // namespace parakeet
