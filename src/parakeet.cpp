@@ -24,17 +24,16 @@ Tensor FeedForward::forward(const Tensor &input) const {
 ConformerConvModule::ConformerConvModule()
     : pointwise_conv1_(/*stride=*/1),
       depthwise_conv_(/*stride=*/1, /*padding=*/4),
-      pointwise_conv2_(/*stride=*/1),
-      dropout_(0.1f) {
-    AX_REGISTER_MODULES(norm_, pointwise_conv1_, depthwise_conv_,
-                        batch_norm_, pointwise_conv2_, dropout_);
+      pointwise_conv2_(/*stride=*/1), dropout_(0.1f) {
+    AX_REGISTER_MODULES(norm_, pointwise_conv1_, depthwise_conv_, batch_norm_,
+                        pointwise_conv2_, dropout_);
 }
 
 Tensor ConformerConvModule::forward(const Tensor &input) const {
     auto x = norm_(input);
     x = x.permute({0, 2, 1}); // (batch, hidden, seq) for conv1d
 
-    x = pointwise_conv1_(x);  // (batch, 2*hidden, seq)
+    x = pointwise_conv1_(x); // (batch, 2*hidden, seq)
     x = ops::glu(x, /*dim=*/1);
 
     x = depthwise_conv_(x);
@@ -69,8 +68,7 @@ ConformerBlock::ConformerBlock() {
     AX_REGISTER_MODULES(ffn1_, attn_, conv_, ffn2_, final_norm_);
 }
 
-Tensor ConformerBlock::forward(const Tensor &input,
-                               const Tensor &mask) const {
+Tensor ConformerBlock::forward(const Tensor &input, const Tensor &mask) const {
     auto x = ffn1_(input);
     x = attn_(x, mask);
     x = conv_(x);
@@ -84,13 +82,9 @@ Tensor ConformerBlock::forward(const Tensor &input,
 ConvSubsampling::ConvSubsampling()
     : depthwise1_(/*stride=*/2, /*padding=*/1),
       depthwise2_(/*stride=*/2, /*padding=*/1),
-      depthwise3_(/*stride=*/2, /*padding=*/1),
-      pointwise1_(/*stride=*/1),
-      pointwise2_(/*stride=*/1),
-      pointwise3_(/*stride=*/1),
-      proj_(true) {
-    AX_REGISTER_MODULES(depthwise1_, pointwise1_,
-                        depthwise2_, pointwise2_,
+      depthwise3_(/*stride=*/2, /*padding=*/1), pointwise1_(/*stride=*/1),
+      pointwise2_(/*stride=*/1), pointwise3_(/*stride=*/1), proj_(true) {
+    AX_REGISTER_MODULES(depthwise1_, pointwise1_, depthwise2_, pointwise2_,
                         depthwise3_, pointwise3_, proj_);
 }
 
@@ -125,9 +119,7 @@ Tensor FastConformerEncoder::forward(const Tensor &input,
 
 // ─── CTCDecoder ─────────────────────────────────────────────────────────────
 
-CTCDecoder::CTCDecoder() : proj_(true) {
-    AX_REGISTER_MODULE(proj_);
-}
+CTCDecoder::CTCDecoder() : proj_(true) { AX_REGISTER_MODULE(proj_); }
 
 Tensor CTCDecoder::forward(const Tensor &input) const {
     return ops::log_softmax(proj_(input), /*axis=*/-1);

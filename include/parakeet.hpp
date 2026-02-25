@@ -64,8 +64,7 @@ class ConformerAttention : public Module {
   public:
     ConformerAttention();
 
-    Tensor forward(const Tensor &input,
-                   const Tensor &mask = Tensor()) const;
+    Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
     Tensor operator()(const Tensor &input,
                       const Tensor &mask = Tensor()) const {
         return forward(input, mask);
@@ -84,8 +83,7 @@ class ConformerBlock : public Module {
   public:
     ConformerBlock();
 
-    Tensor forward(const Tensor &input,
-                   const Tensor &mask = Tensor()) const;
+    Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
     Tensor operator()(const Tensor &input,
                       const Tensor &mask = Tensor()) const {
         return forward(input, mask);
@@ -121,8 +119,7 @@ class FastConformerEncoder : public Module {
   public:
     FastConformerEncoder();
 
-    Tensor forward(const Tensor &input,
-                   const Tensor &mask = Tensor()) const;
+    Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
     Tensor operator()(const Tensor &input,
                       const Tensor &mask = Tensor()) const {
         return forward(input, mask);
@@ -153,8 +150,7 @@ class ParakeetCTC : public Module {
   public:
     explicit ParakeetCTC(const ParakeetConfig &config = {});
 
-    Tensor forward(const Tensor &input,
-                   const Tensor &mask = Tensor()) const;
+    Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
     Tensor operator()(const Tensor &input,
                       const Tensor &mask = Tensor()) const {
         return forward(input, mask);
