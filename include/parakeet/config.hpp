@@ -71,4 +71,27 @@ struct TDTCTCConfig {
     int ctc_vocab_size = 1025;
 };
 
+// ─── Presets ────────────────────────────────────────────────────────────────
+
+// nvidia/parakeet-tdt_ctc-110m (110M params, 459MB .nemo)
+inline TDTCTCConfig make_110m_config() {
+    TDTCTCConfig cfg;
+    cfg.encoder.hidden_size = 512;
+    cfg.encoder.num_layers = 17;
+    cfg.encoder.num_heads = 8;
+    cfg.encoder.ffn_intermediate = 2048;
+    cfg.encoder.subsampling_channels = 256;
+    cfg.encoder.conv_kernel_size = 9;
+    cfg.prediction.vocab_size = 1025;
+    cfg.prediction.pred_hidden = 640;
+    cfg.prediction.num_lstm_layers = 1;
+    cfg.joint.encoder_hidden = 512;
+    cfg.joint.pred_hidden = 640;
+    cfg.joint.joint_hidden = 640;
+    cfg.joint.vocab_size = 1025;
+    cfg.durations = {0, 1, 2, 3, 4};
+    cfg.ctc_vocab_size = 1025;
+    return cfg;
+}
+
 } // namespace parakeet

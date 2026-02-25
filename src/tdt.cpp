@@ -6,7 +6,7 @@ namespace parakeet {
 
 TDTJoint::TDTJoint(const JointConfig &config, int num_durations)
     : config_(config), num_durations_(num_durations), enc_proj_(true),
-      pred_proj_(false), label_proj_(true), duration_proj_(true) {
+      pred_proj_(true), label_proj_(true), duration_proj_(true) {
     AX_REGISTER_MODULES(enc_proj_, pred_proj_, label_proj_, duration_proj_);
 }
 
@@ -24,7 +24,7 @@ TDTJoint::Output TDTJoint::forward(const Tensor &encoder_out,
 // ─── ParakeetTDT ────────────────────────────────────────────────────────────
 
 ParakeetTDT::ParakeetTDT(const TDTConfig &config)
-    : config_(config), prediction_(config.prediction),
+    : config_(config), encoder_(config.encoder), prediction_(config.prediction),
       joint_(config.joint, static_cast<int>(config.durations.size())) {
     AX_REGISTER_MODULES(encoder_, prediction_, joint_);
 }
