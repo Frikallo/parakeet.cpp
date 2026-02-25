@@ -83,19 +83,31 @@ class ConformerBlock : public Module {
     LayerNorm final_norm_;
 };
 
-// ─── Convolutional Subsampling ──────────────────────────────────────────────
+// ─── Convolutional Subsampling (Conv2d, matches NeMo FastConformer) ─────────
+//
+// NeMo structure (nn.Sequential indices):
+//   [0] Conv2d(1, C, 3, stride=2, pad=1)        — regular
+//   [1] activation
+//   [2] Conv2d(C, C, 3, groups=C, stride=1, pad=1) — depthwise
+//   [3] Conv2d(C, C, 3, stride=2, pad=1)        — regular
+//   [4] activation
+//   [5] Conv2d(C, C, 3, groups=C, stride=1, pad=1) — depthwise
+//   [6] Conv2d(C, C, 3, stride=2, pad=1)        — regular
+//   [7] activation
+//   [8] Conv2d(C, C, 3, groups=C, stride=1, pad=1) — depthwise
+//   Linear(C * ceil(mel_bins/8), d_model)        — projection
 
 class ConvSubsampling : public Module {
   public:
-    ConvSubsampling();
+    explicit ConvSubsampling(int channels = 256);
 
     // (batch, mel_length, mel_bins) → (batch, mel_length/8, hidden_size)
     Tensor forward(const Tensor &input) const;
     Tensor operator()(const Tensor &input) const { return forward(input); }
 
   private:
-    Conv1d depthwise1_, depthwise2_, depthwise3_;
-    Conv1d pointwise1_, pointwise2_, pointwise3_;
+    Conv2d conv1_, conv2_, conv3_; // regular convs (stride=2)
+    Conv2d dw1_, dw2_, dw3_;       // depthwise convs (groups=channels)
     Linear proj_;
 };
 
@@ -103,7 +115,7 @@ class ConvSubsampling : public Module {
 
 class FastConformerEncoder : public Module {
   public:
-    FastConformerEncoder();
+    explicit FastConformerEncoder(const EncoderConfig &config = {});
 
     Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
     Tensor operator()(const Tensor &input,

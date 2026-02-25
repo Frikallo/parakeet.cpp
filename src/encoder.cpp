@@ -75,32 +75,46 @@ Tensor ConformerBlock::forward(const Tensor &input, const Tensor &mask) const {
     return x;
 }
 
-// ─── ConvSubsampling ────────────────────────────────────────────────────────
+// ─── ConvSubsampling (Conv2d) ────────────────────────────────────────────────
 
-ConvSubsampling::ConvSubsampling()
-    : depthwise1_(/*stride=*/2, /*padding=*/1),
-      depthwise2_(/*stride=*/2, /*padding=*/1),
-      depthwise3_(/*stride=*/2, /*padding=*/1), pointwise1_(/*stride=*/1),
-      pointwise2_(/*stride=*/1), pointwise3_(/*stride=*/1), proj_(true) {
-    AX_REGISTER_MODULES(depthwise1_, pointwise1_, depthwise2_, pointwise2_,
-                        depthwise3_, pointwise3_, proj_);
+ConvSubsampling::ConvSubsampling(int channels)
+    : conv1_(/*stride=*/{2, 2}, /*padding=*/{1, 1}),
+      conv2_(/*stride=*/{2, 2}, /*padding=*/{1, 1}),
+      conv3_(/*stride=*/{2, 2}, /*padding=*/{1, 1}),
+      dw1_(/*stride=*/{1, 1}, /*padding=*/{1, 1}, /*dilation=*/{1, 1},
+           /*groups=*/channels),
+      dw2_(/*stride=*/{1, 1}, /*padding=*/{1, 1}, /*dilation=*/{1, 1},
+           /*groups=*/channels),
+      dw3_(/*stride=*/{1, 1}, /*padding=*/{1, 1}, /*dilation=*/{1, 1},
+           /*groups=*/channels),
+      proj_(true) {
+    AX_REGISTER_MODULES(conv1_, dw1_, conv2_, dw2_, conv3_, dw3_, proj_);
 }
 
 Tensor ConvSubsampling::forward(const Tensor &input) const {
-    auto x = input.permute({0, 2, 1}); // (batch, mel_bins, mel_length)
+    // input: (batch, mel_length, mel_bins)
+    auto x = input.unsqueeze(1); // (batch, 1, mel_length, mel_bins)
 
-    x = ops::silu(pointwise1_(depthwise1_(x)));
-    x = ops::silu(pointwise2_(depthwise2_(x)));
-    x = ops::silu(pointwise3_(depthwise3_(x)));
+    x = ops::silu(conv1_(x)); // (batch, C, T/2, F/2)
+    x = dw1_(x);
+    x = ops::silu(conv2_(x)); // (batch, C, T/4, F/4)
+    x = dw2_(x);
+    x = ops::silu(conv3_(x)); // (batch, C, T/8, F/8)
+    x = dw3_(x);
 
-    x = x.permute({0, 2, 1}); // (batch, seq, channels)
-    return proj_(x);
+    // Flatten channels and freq: (batch, C, T/8, F/8) → (batch, T/8, C*F/8)
+    auto shape = x.shape();
+    x = x.permute({0, 2, 1, 3}); // (batch, T/8, C, F/8)
+    x = x.reshape({shape[0], shape[2], shape[1] * shape[3]});
+
+    return proj_(x); // (batch, T/8, d_model)
 }
 
 // ─── FastConformerEncoder ───────────────────────────────────────────────────
 
-FastConformerEncoder::FastConformerEncoder() {
-    for (int i = 0; i < 24; ++i) {
+FastConformerEncoder::FastConformerEncoder(const EncoderConfig &config)
+    : subsampling_(config.subsampling_channels) {
+    for (int i = 0; i < config.num_layers; ++i) {
         layers_.emplace_back<ConformerBlock>();
     }
     AX_REGISTER_MODULES(subsampling_, layers_);

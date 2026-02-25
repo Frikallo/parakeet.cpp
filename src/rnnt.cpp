@@ -44,7 +44,8 @@ Tensor RNNTJoint::forward(const Tensor &encoder_out,
 // ─── ParakeetRNNT ───────────────────────────────────────────────────────────
 
 ParakeetRNNT::ParakeetRNNT(const RNNTConfig &config)
-    : config_(config), prediction_(config.prediction), joint_(config.joint) {
+    : config_(config), encoder_(config.encoder), prediction_(config.prediction),
+      joint_(config.joint) {
     AX_REGISTER_MODULES(encoder_, prediction_, joint_);
 }
 

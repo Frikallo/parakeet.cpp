@@ -12,7 +12,8 @@ Tensor CTCDecoder::forward(const Tensor &input) const {
 
 // ─── ParakeetCTC ────────────────────────────────────────────────────────────
 
-ParakeetCTC::ParakeetCTC(const CTCConfig &config) : config_(config) {
+ParakeetCTC::ParakeetCTC(const CTCConfig &config)
+    : config_(config), encoder_(config.encoder) {
     AX_REGISTER_MODULES(encoder_, decoder_);
 }
 

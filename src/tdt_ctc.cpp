@@ -3,7 +3,7 @@
 namespace parakeet {
 
 ParakeetTDTCTC::ParakeetTDTCTC(const TDTCTCConfig &config)
-    : config_(config), prediction_(config.prediction),
+    : config_(config), encoder_(config.encoder), prediction_(config.prediction),
       tdt_joint_(config.joint, static_cast<int>(config.durations.size())) {
     AX_REGISTER_MODULES(encoder_, prediction_, tdt_joint_, ctc_decoder_);
 }
