@@ -8,6 +8,7 @@
 #include "parakeet/config.hpp"
 #include "parakeet/encoder.hpp"
 #include "parakeet/rnnt.hpp"
+#include "parakeet/timestamp.hpp"
 
 namespace parakeet {
 
@@ -77,5 +78,23 @@ std::vector<std::vector<int>>
 tdt_greedy_decode(ParakeetTDT &model, const Tensor &encoder_out,
                   const std::vector<int> &durations, int blank_id = 1024,
                   int max_symbols_per_step = 10);
+
+// ─── Timestamped TDT Greedy Decode ───────────────────────────────────────────
+
+// Component-based: decode with timestamps using prediction + joint directly.
+std::vector<std::vector<TimestampedToken>>
+tdt_greedy_decode_with_timestamps(RNNTPrediction &prediction, TDTJoint &joint,
+                                  const Tensor &encoder_out,
+                                  const std::vector<int> &durations,
+                                  int blank_id = 1024,
+                                  int max_symbols_per_step = 10);
+
+// Convenience: decode with timestamps using a full ParakeetTDT model.
+std::vector<std::vector<TimestampedToken>>
+tdt_greedy_decode_with_timestamps(ParakeetTDT &model,
+                                  const Tensor &encoder_out,
+                                  const std::vector<int> &durations,
+                                  int blank_id = 1024,
+                                  int max_symbols_per_step = 10);
 
 } // namespace parakeet

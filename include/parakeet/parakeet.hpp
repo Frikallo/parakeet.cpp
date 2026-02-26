@@ -10,6 +10,7 @@
 #include "parakeet/rnnt.hpp"
 #include "parakeet/tdt.hpp"
 #include "parakeet/tdt_ctc.hpp"
+#include "parakeet/timestamp.hpp"
 #include "parakeet/transcribe.hpp"
 #include "parakeet/vocab.hpp"
 #include "parakeet/wav.hpp"

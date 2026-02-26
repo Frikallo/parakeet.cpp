@@ -19,6 +19,7 @@ class Tokenizer {
 
     bool loaded() const { return !pieces_.empty(); }
     size_t vocab_size() const { return pieces_.size() + 1; } // +1 for blank
+    const std::vector<std::string> &pieces() const { return pieces_; }
 
   private:
     std::vector<std::string> pieces_; // index i = piece for token ID i

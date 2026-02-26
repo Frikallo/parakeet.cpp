@@ -5,6 +5,7 @@
 #include <axiom/system.hpp>
 
 #include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <string>
 
@@ -17,6 +18,7 @@ static void print_usage(const char *prog) {
         << "  --vocab PATH   SentencePiece vocab file for detokenization\n"
         << "  --features PATH  Load pre-computed features from .npy file\n"
         << "  --gpu          Run on Metal GPU\n"
+        << "  --timestamps   Show word-level timestamps\n"
         << std::endl;
 }
 
@@ -36,6 +38,7 @@ int main(int argc, char *argv[]) {
         std::string audio_path = argv[2];
         bool use_ctc = false;
         bool use_gpu = false;
+        bool show_timestamps = false;
         std::string vocab_path;
         std::string features_path;
 
@@ -47,6 +50,8 @@ int main(int argc, char *argv[]) {
                 use_ctc = false;
             } else if (arg == "--gpu") {
                 use_gpu = true;
+            } else if (arg == "--timestamps") {
+                show_timestamps = true;
             } else if (arg == "--vocab" && i + 1 < argc) {
                 vocab_path = argv[++i];
             } else if (arg == "--features" && i + 1 < argc) {
@@ -170,14 +175,37 @@ int main(int argc, char *argv[]) {
         // 6. Decode
         t0 = Clock::now();
         std::vector<std::vector<int>> token_ids;
+        std::vector<std::vector<TimestampedToken>> timestamped_tokens;
 
         if (use_ctc) {
             auto log_probs = model.ctc_decoder()(encoder_out);
-            // CTC greedy decode needs CPU tensors for pointer access
-            token_ids = ctc_greedy_decode(log_probs.cpu());
+            if (show_timestamps) {
+                timestamped_tokens =
+                    ctc_greedy_decode_with_timestamps(log_probs.cpu());
+                token_ids.resize(timestamped_tokens.size());
+                for (size_t b = 0; b < timestamped_tokens.size(); ++b) {
+                    for (const auto &t : timestamped_tokens[b]) {
+                        token_ids[b].push_back(t.token_id);
+                    }
+                }
+            } else {
+                token_ids = ctc_greedy_decode(log_probs.cpu());
+            }
             std::cout << "  Decoder: CTC" << std::endl;
         } else {
-            token_ids = tdt_greedy_decode(model, encoder_out, cfg.durations);
+            if (show_timestamps) {
+                timestamped_tokens = tdt_greedy_decode_with_timestamps(
+                    model, encoder_out, cfg.durations);
+                token_ids.resize(timestamped_tokens.size());
+                for (size_t b = 0; b < timestamped_tokens.size(); ++b) {
+                    for (const auto &t : timestamped_tokens[b]) {
+                        token_ids[b].push_back(t.token_id);
+                    }
+                }
+            } else {
+                token_ids =
+                    tdt_greedy_decode(model, encoder_out, cfg.durations);
+            }
             std::cout << "  Decoder: TDT" << std::endl;
         }
         t1 = Clock::now();
@@ -200,13 +228,25 @@ int main(int argc, char *argv[]) {
             if (tokenizer.loaded()) {
                 std::cout << tokenizer.decode(tokens) << std::endl;
             } else {
-                // Print raw token IDs
                 for (size_t i = 0; i < tokens.size(); ++i) {
                     if (i > 0)
                         std::cout << " ";
                     std::cout << tokens[i];
                 }
                 std::cout << std::endl;
+            }
+
+            // Print timestamps if requested
+            if (show_timestamps && b < timestamped_tokens.size() &&
+                tokenizer.loaded()) {
+                auto words = group_timestamps(timestamped_tokens[b],
+                                              tokenizer.pieces());
+                std::cout << "\n--- Word Timestamps ---" << std::endl;
+                for (const auto &w : words) {
+                    std::cout << "  [" << std::fixed << std::setprecision(2)
+                              << w.start << "s - " << w.end << "s] " << w.word
+                              << std::endl;
+                }
             }
         }
 

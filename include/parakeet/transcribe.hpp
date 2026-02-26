@@ -11,6 +11,7 @@
 #include "parakeet/ctc.hpp"
 #include "parakeet/tdt.hpp"
 #include "parakeet/tdt_ctc.hpp"
+#include "parakeet/timestamp.hpp"
 #include "parakeet/vocab.hpp"
 #include "parakeet/wav.hpp"
 
@@ -21,6 +22,10 @@ namespace parakeet {
 struct TranscribeResult {
     std::string text;           // Decoded text
     std::vector<int> token_ids; // Raw token IDs before detokenization
+
+    // Optional timestamps (populated when timestamps=true)
+    std::vector<TimestampedToken> timestamped_tokens;
+    std::vector<WordTimestamp> word_timestamps;
 };
 
 // ─── High-Level Transcription API ───────────────────────────────────────────
@@ -56,14 +61,16 @@ class Transcriber {
 
     /// Transcribe a WAV file.
     TranscribeResult transcribe(const std::string &wav_path,
-                                Decoder decoder = Decoder::TDT) {
+                                Decoder decoder = Decoder::TDT,
+                                bool timestamps = false) {
         auto wav = read_wav(wav_path);
-        return transcribe(wav.samples, decoder);
+        return transcribe(wav.samples, decoder, timestamps);
     }
 
     /// Transcribe from raw float32 samples (16kHz mono).
     TranscribeResult transcribe(const axiom::Tensor &samples,
-                                Decoder decoder = Decoder::TDT) {
+                                Decoder decoder = Decoder::TDT,
+                                bool timestamps = false) {
         auto features = preprocess_audio(samples);
         if (use_gpu_) {
             features = features.gpu();
@@ -71,21 +78,53 @@ class Transcriber {
 
         auto encoder_out = model_.encoder()(features);
 
-        std::vector<std::vector<int>> all_tokens;
-
-        if (decoder == Decoder::CTC) {
-            auto log_probs = model_.ctc_decoder()(encoder_out);
-            all_tokens = ctc_greedy_decode(log_probs.cpu());
-        } else {
-            all_tokens =
-                tdt_greedy_decode(model_, encoder_out, config_.durations);
-        }
-
         TranscribeResult result;
-        if (!all_tokens.empty()) {
-            result.token_ids = all_tokens[0];
-            result.text = tokenizer_.decode(result.token_ids);
+
+        if (timestamps) {
+            if (decoder == Decoder::CTC) {
+                auto log_probs = model_.ctc_decoder()(encoder_out);
+                auto all_ts =
+                    ctc_greedy_decode_with_timestamps(log_probs.cpu());
+                if (!all_ts.empty()) {
+                    result.timestamped_tokens = all_ts[0];
+                    for (const auto &t : result.timestamped_tokens) {
+                        result.token_ids.push_back(t.token_id);
+                    }
+                }
+            } else {
+                auto all_ts = tdt_greedy_decode_with_timestamps(
+                    model_, encoder_out, config_.durations);
+                if (!all_ts.empty()) {
+                    result.timestamped_tokens = all_ts[0];
+                    for (const auto &t : result.timestamped_tokens) {
+                        result.token_ids.push_back(t.token_id);
+                    }
+                }
+            }
+
+            if (tokenizer_.loaded()) {
+                result.text = tokenizer_.decode(result.token_ids);
+                result.word_timestamps = group_timestamps(
+                    result.timestamped_tokens, tokenizer_.pieces());
+            }
+        } else {
+            std::vector<std::vector<int>> all_tokens;
+            if (decoder == Decoder::CTC) {
+                auto log_probs = model_.ctc_decoder()(encoder_out);
+                all_tokens = ctc_greedy_decode(log_probs.cpu());
+            } else {
+                all_tokens = tdt_greedy_decode(model_, encoder_out,
+                                               config_.durations);
+            }
+
+            if (!all_tokens.empty()) {
+                result.token_ids = all_tokens[0];
+                if (tokenizer_.loaded()) {
+                    result.text = tokenizer_.decode(result.token_ids);
+                }
+            }
         }
+
         return result;
     }
 

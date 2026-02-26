@@ -7,6 +7,7 @@
 
 #include "parakeet/config.hpp"
 #include "parakeet/encoder.hpp"
+#include "parakeet/timestamp.hpp"
 
 namespace parakeet {
 
@@ -53,5 +54,10 @@ class ParakeetCTC : public Module {
 // Applies argmax, collapses repeats, removes blank (token 0).
 std::vector<std::vector<int>> ctc_greedy_decode(const Tensor &log_probs,
                                                 int blank_id = 1024);
+
+// Same as above, but records frame indices for each emitted token.
+std::vector<std::vector<TimestampedToken>>
+ctc_greedy_decode_with_timestamps(const Tensor &log_probs,
+                                  int blank_id = 1024);
 
 } // namespace parakeet
