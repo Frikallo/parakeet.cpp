@@ -2,63 +2,145 @@
 
 #include <axiom/io/safetensors.hpp>
 
+#include <chrono>
 #include <iostream>
 #include <string>
 
+static void print_usage(const char *prog) {
+    std::cerr
+        << "Usage: " << prog << " <model.safetensors> <audio.wav> [options]\n"
+        << "\nOptions:\n"
+        << "  --ctc          Use CTC decoder (default: TDT)\n"
+        << "  --tdt          Use TDT decoder\n"
+        << "  --vocab PATH   SentencePiece vocab file for detokenization\n"
+        << std::endl;
+}
+
 int main(int argc, char *argv[]) {
     using namespace parakeet;
+    using Clock = std::chrono::high_resolution_clock;
 
-    if (argc < 2) {
-        // No weights file — just print model info
-        TDTCTCConfig cfg = make_110m_config();
-        ParakeetTDTCTC model(cfg);
-
-        std::cout << "ParakeetTDTCTC (110M config)" << std::endl;
-        std::cout << "  Encoder layers:  " << cfg.encoder.num_layers
-                  << std::endl;
-        std::cout << "  Hidden size:     " << cfg.encoder.hidden_size
-                  << std::endl;
-        std::cout << "  TDT vocab size:  " << cfg.joint.vocab_size << std::endl;
-        std::cout << "  CTC vocab size:  " << cfg.ctc_vocab_size << std::endl;
-        std::cout << "  Pred LSTM layers:" << cfg.prediction.num_lstm_layers
-                  << std::endl;
-        std::cout << std::endl;
-
-        // Dump named parameters for debugging name mapping
-        auto params = model.named_parameters();
-        std::cout << "Named parameters (" << params.size() << "):" << std::endl;
-        for (const auto &[name, param] : params) {
-            std::cout << "  " << name << std::endl;
-        }
-
-        return 0;
+    if (argc < 3) {
+        print_usage(argv[0]);
+        return 1;
     }
 
-    // Load weights from safetensors file
+    // Parse arguments
     std::string weights_path = argv[1];
-    std::cout << "Loading weights from: " << weights_path << std::endl;
+    std::string audio_path = argv[2];
+    bool use_ctc = false;
+    std::string vocab_path;
 
+    for (int i = 3; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--ctc") {
+            use_ctc = true;
+        } else if (arg == "--tdt") {
+            use_ctc = false;
+        } else if (arg == "--vocab" && i + 1 < argc) {
+            vocab_path = argv[++i];
+        } else {
+            std::cerr << "Unknown option: " << arg << std::endl;
+            print_usage(argv[0]);
+            return 1;
+        }
+    }
+
+    // 1. Load model
+    std::cout << "Loading model from: " << weights_path << std::endl;
     TDTCTCConfig cfg = make_110m_config();
     ParakeetTDTCTC model(cfg);
 
     auto weights = axiom::io::safetensors::load(weights_path);
-    std::cout << "Loaded " << weights.size() << " tensors from safetensors"
-              << std::endl;
-
-    // Non-strict: CTC decoder weights may not be in checkpoint
     model.load_state_dict(weights, /*prefix=*/"", /*strict=*/false);
-    std::cout << "Successfully loaded state dict!" << std::endl;
+    std::cout << "Model loaded (" << weights.size() << " tensors)" << std::endl;
 
-    // Print parameter count
-    size_t total_params = 0;
-    for (const auto &[name, param] : weights) {
-        size_t count = 1;
-        for (auto dim : param.shape()) {
-            count *= dim;
-        }
-        total_params += count;
+    // 2. Load vocab (optional)
+    Tokenizer tokenizer;
+    if (!vocab_path.empty()) {
+        tokenizer.load(vocab_path);
+        std::cout << "Vocab loaded (" << tokenizer.vocab_size() << " tokens)"
+                  << std::endl;
     }
-    std::cout << "Total parameters: " << total_params << std::endl;
+
+    // 3. Read WAV
+    std::cout << "Reading audio: " << audio_path << std::endl;
+    auto wav = read_wav(audio_path);
+    std::cout << "  Sample rate: " << wav.sample_rate
+              << ", channels: " << wav.num_channels
+              << ", samples: " << wav.num_samples << std::endl;
+
+    if (wav.sample_rate != 16000) {
+        std::cerr << "Warning: expected 16kHz audio, got " << wav.sample_rate
+                  << "Hz" << std::endl;
+    }
+
+    // 4. Preprocess audio
+    auto t0 = Clock::now();
+    auto features = preprocess_audio(wav.samples);
+    auto t1 = Clock::now();
+
+    auto feat_shape = features.shape();
+    std::cout << "  Features: (" << feat_shape[0] << ", " << feat_shape[1]
+              << ", " << feat_shape[2] << ")" << std::endl;
+    std::cout << "  Preprocessing: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
+                     .count()
+              << " ms" << std::endl;
+
+    // 5. Encoder forward pass
+    t0 = Clock::now();
+    auto encoder_out = model.encoder()(features);
+    t1 = Clock::now();
+
+    auto enc_shape = encoder_out.shape();
+    std::cout << "  Encoder out: (" << enc_shape[0] << ", " << enc_shape[1]
+              << ", " << enc_shape[2] << ")" << std::endl;
+    std::cout << "  Encoder: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
+                     .count()
+              << " ms" << std::endl;
+
+    // 6. Decode
+    t0 = Clock::now();
+    std::vector<std::vector<int>> token_ids;
+
+    if (use_ctc) {
+        auto log_probs = model.ctc_decoder()(encoder_out);
+        token_ids = ctc_greedy_decode(log_probs);
+        std::cout << "  Decoder: CTC" << std::endl;
+    } else {
+        token_ids = tdt_greedy_decode(model, encoder_out, cfg.durations);
+        std::cout << "  Decoder: TDT" << std::endl;
+    }
+    t1 = Clock::now();
+
+    std::cout << "  Decode: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
+                     .count()
+              << " ms" << std::endl;
+
+    // 7. Detokenize and print
+    for (size_t b = 0; b < token_ids.size(); ++b) {
+        const auto &tokens = token_ids[b];
+        std::cout << "\n--- Transcription";
+        if (token_ids.size() > 1) {
+            std::cout << " [" << b << "]";
+        }
+        std::cout << " (" << tokens.size() << " tokens) ---" << std::endl;
+
+        if (tokenizer.loaded()) {
+            std::cout << tokenizer.decode(tokens) << std::endl;
+        } else {
+            // Print raw token IDs
+            for (size_t i = 0; i < tokens.size(); ++i) {
+                if (i > 0)
+                    std::cout << " ";
+                std::cout << tokens[i];
+            }
+            std::cout << std::endl;
+        }
+    }
 
     return 0;
 }

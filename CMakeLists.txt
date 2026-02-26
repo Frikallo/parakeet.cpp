@@ -26,6 +26,9 @@ add_library(parakeet_lib STATIC
     src/rnnt.cpp
     src/tdt.cpp
     src/tdt_ctc.cpp
+    src/wav.cpp
+    src/audio.cpp
+    src/vocab.cpp
 )
 target_link_libraries(parakeet_lib PUBLIC Axiom::axiom)
 target_include_directories(parakeet_lib PUBLIC include)

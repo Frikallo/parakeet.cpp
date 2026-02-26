@@ -32,9 +32,9 @@ ParakeetTDT::ParakeetTDT(const TDTConfig &config)
 // ─── TDT Greedy Decode ─────────────────────────────────────────────────────
 
 std::vector<std::vector<int>>
-tdt_greedy_decode(ParakeetTDT &model, const Tensor &encoder_out,
-                  const std::vector<int> &durations, int blank_id,
-                  int max_symbols_per_step) {
+tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
+                  const Tensor &encoder_out, const std::vector<int> &durations,
+                  int blank_id, int max_symbols_per_step) {
     auto shape = encoder_out.shape();
     int batch_size = static_cast<int>(shape[0]);
     int seq_len = static_cast<int>(shape[1]);
@@ -44,7 +44,7 @@ tdt_greedy_decode(ParakeetTDT &model, const Tensor &encoder_out,
     for (int b = 0; b < batch_size; ++b) {
         auto enc = encoder_out.slice({Slice(b, b + 1)}); // (1, seq, hidden)
 
-        int num_layers = model.prediction().config().num_lstm_layers;
+        int num_layers = prediction.config().num_lstm_layers;
         std::vector<LSTMState> states(num_layers);
 
         auto token = Tensor::zeros({1}, DType::Int32);
@@ -55,10 +55,10 @@ tdt_greedy_decode(ParakeetTDT &model, const Tensor &encoder_out,
                 enc.slice({Slice(), Slice(t, t + 1)}); // (1, 1, hidden)
 
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
-                auto pred = model.prediction().step(token, states);
+                auto pred = prediction.step(token, states);
                 pred = pred.unsqueeze(1); // (1, 1, pred_hidden)
 
-                auto [label_lp, dur_lp] = model.joint().forward(enc_t, pred);
+                auto [label_lp, dur_lp] = joint.forward(enc_t, pred);
 
                 // Get best label and duration
                 auto best_label =
@@ -91,6 +91,14 @@ tdt_greedy_decode(ParakeetTDT &model, const Tensor &encoder_out,
     }
 
     return results;
+}
+
+std::vector<std::vector<int>>
+tdt_greedy_decode(ParakeetTDT &model, const Tensor &encoder_out,
+                  const std::vector<int> &durations, int blank_id,
+                  int max_symbols_per_step) {
+    return tdt_greedy_decode(model.prediction(), model.joint(), encoder_out,
+                             durations, blank_id, max_symbols_per_step);
 }
 
 } // namespace parakeet

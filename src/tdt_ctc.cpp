@@ -8,4 +8,14 @@ ParakeetTDTCTC::ParakeetTDTCTC(const TDTCTCConfig &config)
     AX_REGISTER_MODULES(encoder_, prediction_, tdt_joint_, ctc_decoder_);
 }
 
+// ─── TDT-CTC Decode Helpers ───────────────────────────────────────────────
+
+std::vector<std::vector<int>>
+tdt_greedy_decode(ParakeetTDTCTC &model, const Tensor &encoder_out,
+                  const std::vector<int> &durations, int blank_id,
+                  int max_symbols_per_step) {
+    return tdt_greedy_decode(model.prediction(), model.tdt_joint(), encoder_out,
+                             durations, blank_id, max_symbols_per_step);
+}
+
 } // namespace parakeet
