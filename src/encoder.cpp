@@ -1,7 +1,6 @@
 #include "parakeet/encoder.hpp"
 
 #include <cmath>
-#include <iostream>
 
 namespace parakeet {
 
@@ -235,6 +234,7 @@ Tensor ConvSubsampling::forward(const Tensor &input) const {
     // Flatten channels and freq: (batch, C, T/8, F/8) → (batch, T/8, C*F/8)
     auto shape = x.shape();
     x = x.permute({0, 2, 1, 3}); // (batch, T/8, C, F/8)
+    x = x.ascontiguousarray();
     x = x.reshape({shape[0], shape[2], shape[1] * shape[3]});
 
     return proj_(x); // (batch, T/8, d_model)
@@ -258,6 +258,11 @@ Tensor FastConformerEncoder::forward(const Tensor &input,
     int seq_len = static_cast<int>(x.shape()[1]);
     int d_model = static_cast<int>(x.shape()[2]);
     auto pos_emb = sinusoidal_position_embedding(seq_len, d_model);
+
+    // Match pos_emb device to input
+    if (x.device() != pos_emb.device()) {
+        pos_emb = pos_emb.to(x.device());
+    }
 
     for (const auto &block : layers_.each<ConformerBlock>()) {
         x = block(x, pos_emb, mask);

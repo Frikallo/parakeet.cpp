@@ -15,10 +15,11 @@ Tensor CTCDecoder::forward(const Tensor &input) const {
     // output: (batch, vocab, seq) → (batch, seq, vocab)
     x = x.transpose({0, 2, 1});
 
-    // IMPORTANT: make contiguous before log_softmax — axiom's log_softmax
-    // operates on physical layout, not logical, so non-contiguous tensors
-    // get softmax applied on the wrong axis.
-    x = x.ascontiguousarray();
+    // IMPORTANT: move to CPU and make contiguous before log_softmax.
+    // axiom's CPU log_softmax requires contiguous input (operates on physical
+    // layout). GPU log_softmax via MPSGraph also has issues with transposed
+    // tensors.
+    x = x.cpu().ascontiguousarray();
     return ops::log_softmax(x, /*axis=*/-1);
 }
 

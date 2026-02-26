@@ -2,6 +2,7 @@
 
 #include <axiom/io/numpy.hpp>
 #include <axiom/io/safetensors.hpp>
+#include <axiom/system.hpp>
 
 #include <chrono>
 #include <iostream>
@@ -15,6 +16,7 @@ static void print_usage(const char *prog) {
         << "  --tdt          Use TDT decoder\n"
         << "  --vocab PATH   SentencePiece vocab file for detokenization\n"
         << "  --features PATH  Load pre-computed features from .npy file\n"
+        << "  --gpu          Run on Metal GPU\n"
         << std::endl;
 }
 
@@ -33,6 +35,7 @@ int main(int argc, char *argv[]) {
         std::string weights_path = argv[1];
         std::string audio_path = argv[2];
         bool use_ctc = false;
+        bool use_gpu = false;
         std::string vocab_path;
         std::string features_path;
 
@@ -42,6 +45,8 @@ int main(int argc, char *argv[]) {
                 use_ctc = true;
             } else if (arg == "--tdt") {
                 use_ctc = false;
+            } else if (arg == "--gpu") {
+                use_gpu = true;
             } else if (arg == "--vocab" && i + 1 < argc) {
                 vocab_path = argv[++i];
             } else if (arg == "--features" && i + 1 < argc) {
@@ -62,6 +67,22 @@ int main(int argc, char *argv[]) {
         model.load_state_dict(weights, /*prefix=*/"", /*strict=*/false);
         std::cout << "Model loaded (" << weights.size() << " tensors)"
                   << std::endl;
+
+        // Move model to GPU if requested
+        if (use_gpu) {
+            if (!axiom::system::is_metal_available()) {
+                std::cerr << "Error: Metal GPU not available" << std::endl;
+                return 1;
+            }
+            auto t_gpu = Clock::now();
+            model.to(axiom::Device::GPU);
+            auto t_gpu_done = Clock::now();
+            std::cout << "Model moved to GPU ("
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(
+                             t_gpu_done - t_gpu)
+                             .count()
+                      << " ms)" << std::endl;
+        }
 
         // 2. Load vocab (optional)
         Tokenizer tokenizer;
@@ -105,13 +126,41 @@ int main(int argc, char *argv[]) {
                   << " ms" << std::endl;
 
         // 5. Encoder forward pass
+        if (use_gpu) {
+            features = features.gpu();
+        }
         t0 = Clock::now();
         auto encoder_out = model.encoder()(features);
         t1 = Clock::now();
 
-        auto enc_shape = encoder_out.shape();
-        std::cout << "  Encoder out: (" << enc_shape[0] << ", " << enc_shape[1]
-                  << ", " << enc_shape[2] << ")" << std::endl;
+        // Force sync for timing (read a value to materialize GPU results)
+        {
+            auto tmp = encoder_out.cpu().ascontiguousarray();
+            auto enc_shape = tmp.shape();
+            std::cout << "  Encoder out: (" << enc_shape[0] << ", "
+                      << enc_shape[1] << ", " << enc_shape[2] << ")"
+                      << std::endl;
+            // Print stats
+            auto flat = tmp.flatten();
+            size_t n = flat.shape()[0];
+            const float *d = flat.typed_data<float>();
+            float mn = d[0], mx = d[0], sum = 0;
+            int nan_count = 0;
+            for (size_t i = 0; i < n; ++i) {
+                if (std::isnan(d[i])) {
+                    nan_count++;
+                    continue;
+                }
+                if (d[i] < mn)
+                    mn = d[i];
+                if (d[i] > mx)
+                    mx = d[i];
+                sum += d[i];
+            }
+            std::cout << "  Encoder stats: min=" << mn << " max=" << mx
+                      << " mean=" << sum / static_cast<float>(n)
+                      << " nans=" << nan_count << std::endl;
+        }
         std::cout << "  Encoder: "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(t1 -
                                                                            t0)
@@ -124,7 +173,8 @@ int main(int argc, char *argv[]) {
 
         if (use_ctc) {
             auto log_probs = model.ctc_decoder()(encoder_out);
-            token_ids = ctc_greedy_decode(log_probs);
+            // CTC greedy decode needs CPU tensors for pointer access
+            token_ids = ctc_greedy_decode(log_probs.cpu());
             std::cout << "  Decoder: CTC" << std::endl;
         } else {
             token_ids = tdt_greedy_decode(model, encoder_out, cfg.durations);
