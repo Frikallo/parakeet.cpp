@@ -30,6 +30,11 @@ add_library(parakeet_lib STATIC
     src/audio.cpp
     src/vocab.cpp
     src/timestamp.cpp
+    src/streaming_encoder.cpp
+    src/eou.cpp
+    src/nemotron.cpp
+    src/transformer.cpp
+    src/sortformer.cpp
 )
 target_link_libraries(parakeet_lib PUBLIC Axiom::axiom)
 target_include_directories(parakeet_lib PUBLIC include)

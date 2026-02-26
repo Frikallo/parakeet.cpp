@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Convert NeMo parakeet-tdt_ctc-110m checkpoint to safetensors for axiom.
+"""Convert NeMo Parakeet checkpoints to safetensors for axiom.
+
+Supported models:
+  - 110m-tdt-ctc  (parakeet-tdt_ctc-110m)
+  - 600m-tdt      (parakeet-tdt-0.6b-v2, multilingual)
+  - eou-120m      (parakeet-tdt_ctc-0.12b-eou)
+  - nemotron-600m (parakeet-tdt-1.1b / nemotron streaming)
 
 Usage:
     # Dump NeMo checkpoint keys (discovery):
-    python scripts/convert_nemo.py --dump path/to/parakeet-tdt_ctc-110m.nemo
+    python scripts/convert_nemo.py --dump path/to/model.nemo
 
     # Convert to safetensors:
-    python scripts/convert_nemo.py path/to/parakeet-tdt_ctc-110m.nemo -o model.safetensors
+    python scripts/convert_nemo.py path/to/model.nemo -o model.safetensors
+
+    # Convert specific model type:
+    python scripts/convert_nemo.py path/to/model.nemo -o model.safetensors --model 600m-tdt
 """
 
 import argparse
@@ -19,6 +28,55 @@ import torch
 from safetensors.torch import save_file
 
 
+# ─── Model Presets ───────────────────────────────────────────────────────────
+
+MODEL_PRESETS = {
+    "110m-tdt-ctc": {
+        "num_layers": 17,
+        "vocab_size": 1025,
+        "num_durations": 5,
+        "num_lstm_layers": 1,
+        "has_ctc": True,
+        "joint_prefix": "tdt_joint_",
+    },
+    "600m-tdt": {
+        "num_layers": 24,
+        "vocab_size": 8193,
+        "num_durations": 5,
+        "num_lstm_layers": 2,
+        "has_ctc": False,
+        "joint_prefix": "joint_",
+    },
+    "eou-120m": {
+        "num_layers": 17,
+        "vocab_size": 1025,
+        "num_durations": 5,
+        "num_lstm_layers": 1,
+        "has_ctc": True,
+        "joint_prefix": "tdt_joint_",
+    },
+    "nemotron-600m": {
+        "num_layers": 24,
+        "vocab_size": 8193,
+        "num_durations": 5,
+        "num_lstm_layers": 2,
+        "has_ctc": False,
+        "joint_prefix": "joint_",
+    },
+    "sortformer": {
+        "num_layers": 17,
+        "vocab_size": 0,
+        "num_durations": 0,
+        "num_lstm_layers": 0,
+        "has_ctc": False,
+        "has_decoder": False,
+        "joint_prefix": "",
+    },
+}
+
+DEFAULT_MODEL = "110m-tdt-ctc"
+
+# For backwards compatibility
 NUM_LAYERS = 17
 VOCAB_SIZE = 1025
 NUM_DURATIONS = 5
@@ -115,7 +173,7 @@ def build_conformer_layer_map(layer_idx):
     return m
 
 
-def build_prediction_map():
+def build_prediction_map(num_lstm_layers=1):
     """Map NeMo prediction network keys to axiom keys.
 
     NeMo path: decoder.prediction.embed / decoder.prediction.dec_rnn.lstm
@@ -125,17 +183,16 @@ def build_prediction_map():
     # Embedding
     m["decoder.prediction.embed.weight"] = "prediction_.embed_.weight"
 
-    # LSTM (layer 0 only for 110M)
-    # NeMo uses nn.LSTM: weight_ih_l0, weight_hh_l0, bias_ih_l0, bias_hh_l0
-    # Axiom uses LSTMCell: input_proj_.weight, input_proj_.bias, hidden_proj_.weight
-    m["decoder.prediction.dec_rnn.lstm.weight_ih_l0"] = "prediction_.lstm_.cells_.0.input_proj_.weight"
-    m["decoder.prediction.dec_rnn.lstm.weight_hh_l0"] = "prediction_.lstm_.cells_.0.hidden_proj_.weight"
-    # bias_ih and bias_hh are MERGED into input_proj_.bias (handled specially)
+    # LSTM layers
+    for l in range(num_lstm_layers):
+        m[f"decoder.prediction.dec_rnn.lstm.weight_ih_l{l}"] = f"prediction_.lstm_.cells_.{l}.input_proj_.weight"
+        m[f"decoder.prediction.dec_rnn.lstm.weight_hh_l{l}"] = f"prediction_.lstm_.cells_.{l}.hidden_proj_.weight"
+        # bias_ih and bias_hh are MERGED into input_proj_.bias (handled specially)
 
     return m
 
 
-def build_joint_map():
+def build_joint_map(joint_prefix="tdt_joint_"):
     """Map NeMo TDT joint network keys to axiom keys.
 
     NeMo structure:
@@ -147,10 +204,10 @@ def build_joint_map():
     m = {}
 
     for param in ("weight", "bias"):
-        m[f"joint.enc.{param}"] = f"tdt_joint_.enc_proj_.{param}"
-        m[f"joint.pred.{param}"] = f"tdt_joint_.pred_proj_.{param}"
+        m[f"joint.enc.{param}"] = f"{joint_prefix}enc_proj_.{param}"
+        m[f"joint.pred.{param}"] = f"{joint_prefix}pred_proj_.{param}"
 
-    # joint.joint_net.2 is combined [1030] = [1025 vocab + 5 durations]
+    # joint.joint_net.2 is combined [vocab_size + num_durations]
     # Handled specially in convert() — split into label_proj_ and duration_proj_
 
     return m
@@ -170,15 +227,24 @@ def build_ctc_map():
     return m
 
 
-def build_full_mapping():
+def build_full_mapping(preset=None):
     """Build the complete NeMo → axiom mapping."""
+    if preset is None:
+        preset = MODEL_PRESETS[DEFAULT_MODEL]
+
     m = {}
     m.update(build_subsampling_map())
-    for i in range(NUM_LAYERS):
+    for i in range(preset["num_layers"]):
         m.update(build_conformer_layer_map(i))
-    m.update(build_prediction_map())
-    m.update(build_joint_map())
-    m.update(build_ctc_map())
+
+    # Models without decoder (e.g., sortformer) skip prediction/joint mapping
+    has_decoder = preset.get("has_decoder", True)
+    if has_decoder and preset["num_lstm_layers"] > 0:
+        m.update(build_prediction_map(preset["num_lstm_layers"]))
+    if has_decoder and preset["joint_prefix"]:
+        m.update(build_joint_map(preset["joint_prefix"]))
+    if preset.get("has_ctc", False):
+        m.update(build_ctc_map())
     return m
 
 
@@ -192,11 +258,16 @@ SKIP_KEYS = set()
 
 # pos_bias_u and pos_bias_v are now mapped to ConformerAttention parameters
 
-# LSTM biases are handled specially (merged)
-LSTM_BIAS_KEYS = {
-    "decoder.prediction.dec_rnn.lstm.bias_ih_l0",
-    "decoder.prediction.dec_rnn.lstm.bias_hh_l0",
-}
+def get_lstm_bias_keys(num_lstm_layers=1):
+    """Get LSTM bias keys for all layers (handled specially: merged)."""
+    keys = set()
+    for l in range(num_lstm_layers):
+        keys.add(f"decoder.prediction.dec_rnn.lstm.bias_ih_l{l}")
+        keys.add(f"decoder.prediction.dec_rnn.lstm.bias_hh_l{l}")
+    return keys
+
+# For backwards compatibility
+LSTM_BIAS_KEYS = get_lstm_bias_keys(1)
 
 # Combined joint output is handled specially (split)
 JOINT_COMBINED_KEYS = {
@@ -205,8 +276,10 @@ JOINT_COMBINED_KEYS = {
 }
 
 
-def should_skip(key):
-    if key in SKIP_KEYS or key in LSTM_BIAS_KEYS or key in JOINT_COMBINED_KEYS:
+def should_skip(key, lstm_bias_keys=None):
+    if lstm_bias_keys is None:
+        lstm_bias_keys = LSTM_BIAS_KEYS
+    if key in SKIP_KEYS or key in lstm_bias_keys or key in JOINT_COMBINED_KEYS:
         return True
     return any(key.startswith(p) for p in SKIP_PREFIXES)
 
@@ -249,50 +322,61 @@ def dump_keys(ckpt_path):
         print(f"  {key:70s} {list(t.shape)}")
 
 
-def convert(ckpt_path, output_path):
+def convert(ckpt_path, output_path, model_type=DEFAULT_MODEL):
     """Convert NeMo checkpoint to axiom safetensors."""
+    preset = MODEL_PRESETS[model_type]
+    vocab_size = preset["vocab_size"]
+    num_durations = preset["num_durations"]
+    num_lstm_layers = preset["num_lstm_layers"]
+    joint_prefix = preset["joint_prefix"]
+    lstm_bias_keys = get_lstm_bias_keys(num_lstm_layers)
+
+    print(f"Model type: {model_type}")
+    print(f"  Encoder layers: {preset['num_layers']}, vocab: {vocab_size}, "
+          f"LSTM layers: {num_lstm_layers}, CTC: {preset.get('has_ctc', False)}")
+
     state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    mapping = build_full_mapping()
+    mapping = build_full_mapping(preset)
 
     output = {}
     mapped_nemo_keys = set()
     skipped = []
     unmapped = []
 
-    # ── Special handling: LSTM bias merging ──
-    bias_ih = state_dict.get("decoder.prediction.dec_rnn.lstm.bias_ih_l0")
-    bias_hh = state_dict.get("decoder.prediction.dec_rnn.lstm.bias_hh_l0")
-    if bias_ih is not None and bias_hh is not None:
-        merged_bias = bias_ih + bias_hh
-        output["prediction_.lstm_.cells_.0.input_proj_.bias"] = merged_bias
-        mapped_nemo_keys.update(LSTM_BIAS_KEYS)
-        print(f"  Merged LSTM biases: {list(bias_ih.shape)} → {list(merged_bias.shape)}")
+    # ── Special handling: LSTM bias merging (all layers) ──
+    for l in range(num_lstm_layers):
+        bias_ih = state_dict.get(f"decoder.prediction.dec_rnn.lstm.bias_ih_l{l}")
+        bias_hh = state_dict.get(f"decoder.prediction.dec_rnn.lstm.bias_hh_l{l}")
+        if bias_ih is not None and bias_hh is not None:
+            merged_bias = bias_ih + bias_hh
+            output[f"prediction_.lstm_.cells_.{l}.input_proj_.bias"] = merged_bias
+            mapped_nemo_keys.add(f"decoder.prediction.dec_rnn.lstm.bias_ih_l{l}")
+            mapped_nemo_keys.add(f"decoder.prediction.dec_rnn.lstm.bias_hh_l{l}")
+            print(f"  Merged LSTM layer {l} biases: {list(bias_ih.shape)} → {list(merged_bias.shape)}")
 
     # ── Special handling: split combined joint output ──
     joint_w = state_dict.get("joint.joint_net.2.weight")
     joint_b = state_dict.get("joint.joint_net.2.bias")
     if joint_w is not None:
-        # joint_w: [vocab_size + num_durations, joint_hidden]
-        # Split: first vocab_size rows → label, last num_durations rows → duration
-        output["tdt_joint_.label_proj_.weight"] = joint_w[:VOCAB_SIZE]
-        output["tdt_joint_.duration_proj_.weight"] = joint_w[VOCAB_SIZE:]
+        output[f"{joint_prefix}label_proj_.weight"] = joint_w[:vocab_size]
+        output[f"{joint_prefix}duration_proj_.weight"] = joint_w[vocab_size:]
         mapped_nemo_keys.add("joint.joint_net.2.weight")
         print(f"  Split joint weight: {list(joint_w.shape)} → "
-              f"label {list(joint_w[:VOCAB_SIZE].shape)} + "
-              f"duration {list(joint_w[VOCAB_SIZE:].shape)}")
+              f"label {list(joint_w[:vocab_size].shape)} + "
+              f"duration {list(joint_w[vocab_size:].shape)}")
     if joint_b is not None:
-        output["tdt_joint_.label_proj_.bias"] = joint_b[:VOCAB_SIZE]
-        output["tdt_joint_.duration_proj_.bias"] = joint_b[VOCAB_SIZE:]
+        output[f"{joint_prefix}label_proj_.bias"] = joint_b[:vocab_size]
+        output[f"{joint_prefix}duration_proj_.bias"] = joint_b[vocab_size:]
         mapped_nemo_keys.add("joint.joint_net.2.bias")
         print(f"  Split joint bias: {list(joint_b.shape)} → "
-              f"label [{VOCAB_SIZE}] + duration [{NUM_DURATIONS}]")
+              f"label [{vocab_size}] + duration [{num_durations}]")
 
     # ── Map remaining keys ──
     for nemo_key, tensor in state_dict.items():
         if nemo_key in mapped_nemo_keys:
             continue
 
-        if should_skip(nemo_key):
+        if should_skip(nemo_key, lstm_bias_keys):
             skipped.append(nemo_key)
             continue
 
@@ -326,17 +410,18 @@ def convert(ckpt_path, output_path):
         print("\nThese NeMo keys have no axiom mapping. Update the converter.")
         sys.exit(1)
 
-    # Check for missing CTC decoder weights
-    ctc_missing = []
-    for param in ("weight", "bias"):
-        key = f"ctc_decoder_.proj_.{param}"
-        if key not in output:
-            ctc_missing.append(key)
-    if ctc_missing:
-        print(f"\nNote: CTC decoder weights not found in checkpoint.")
-        print(f"  Missing: {ctc_missing}")
-        print(f"  CTC head will be randomly initialized at load time.")
-        print(f"  (This is normal if the model was trained with TDT only.)")
+    # Check for missing CTC decoder weights (only if model has CTC)
+    if preset.get("has_ctc", False):
+        ctc_missing = []
+        for param in ("weight", "bias"):
+            key = f"ctc_decoder_.proj_.{param}"
+            if key not in output:
+                ctc_missing.append(key)
+        if ctc_missing:
+            print(f"\nNote: CTC decoder weights not found in checkpoint.")
+            print(f"  Missing: {ctc_missing}")
+            print(f"  CTC head will be randomly initialized at load time.")
+            print(f"  (This is normal if the model was trained with TDT only.)")
 
     # Convert to float32 and save
     output = {k: v.float().contiguous() for k, v in output.items()}
@@ -355,6 +440,9 @@ def main():
                         help="Output safetensors file (default: model.safetensors)")
     parser.add_argument("--dump", action="store_true",
                         help="Just dump checkpoint keys and shapes")
+    parser.add_argument("--model", choices=list(MODEL_PRESETS.keys()),
+                        default=DEFAULT_MODEL,
+                        help=f"Model type (default: {DEFAULT_MODEL})")
     args = parser.parse_args()
 
     ckpt_path = extract_checkpoint(args.input)
@@ -363,7 +451,7 @@ def main():
     if args.dump:
         dump_keys(ckpt_path)
     else:
-        convert(ckpt_path, args.output)
+        convert(ckpt_path, args.output, args.model)
 
 
 if __name__ == "__main__":

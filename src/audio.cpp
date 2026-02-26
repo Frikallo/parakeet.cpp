@@ -11,7 +11,7 @@ using namespace axiom;
 
 // ─── Slaney Mel Scale (matches librosa / NeMo) ──────────────────────────────
 
-namespace {
+namespace detail {
 
 // Slaney mel scale: linear below 1000 Hz, log above
 constexpr double MEL_BREAK_FREQ = 1000.0;
@@ -91,7 +91,7 @@ Tensor build_mel_filterbank(int n_freqs, int n_mels, float sample_rate,
         Shape{static_cast<size_t>(n_freqs), static_cast<size_t>(n_mels)}, true);
 }
 
-} // namespace
+} // namespace detail
 
 // ─── Preprocessing ───────────────────────────────────────────────────────────
 
@@ -123,7 +123,7 @@ Tensor preprocess_audio(const Tensor &waveform, const AudioConfig &config) {
 
     // 4. Apply mel filterbank (slaney scale + slaney normalization)
     float f_max = config.f_max > 0 ? config.f_max : config.sample_rate / 2.0f;
-    auto mel_fb = build_mel_filterbank(config.n_fft / 2 + 1, config.n_mels,
+    auto mel_fb = detail::build_mel_filterbank(config.n_fft / 2 + 1, config.n_mels,
                                        config.sample_rate, config.f_min, f_max);
     // mel_spec: (n_mels, n_frames) = mel_fb^T @ power
     auto mel_spec = ops::matmul(mel_fb.transpose(), power);
@@ -146,6 +146,97 @@ Tensor preprocess_audio(const Tensor &waveform, const AudioConfig &config) {
     // 7. Transpose and add batch dim: (n_mels, n_frames) -> (1, n_frames,
     // n_mels)
     auto result = norm.transpose().unsqueeze(0);
+    return result;
+}
+
+// ─── Streaming Audio Preprocessor ────────────────────────────────────────────
+
+StreamingAudioPreprocessor::StreamingAudioPreprocessor(const AudioConfig &config)
+    : config_(config) {
+    mel_sum_.resize(config.n_mels, 0.0);
+    mel_sq_sum_.resize(config.n_mels, 0.0);
+}
+
+void StreamingAudioPreprocessor::build_mel_filterbank() {
+    float f_max =
+        config_.f_max > 0 ? config_.f_max : config_.sample_rate / 2.0f;
+    mel_fb_ = detail::build_mel_filterbank(config_.n_fft / 2 + 1, config_.n_mels,
+                                            config_.sample_rate, config_.f_min, f_max);
+    mel_fb_built_ = true;
+}
+
+void StreamingAudioPreprocessor::reset() {
+    preemph_last_sample_ = 0.0f;
+    overlap_buffer_.clear();
+    std::fill(mel_sum_.begin(), mel_sum_.end(), 0.0);
+    std::fill(mel_sq_sum_.begin(), mel_sq_sum_.end(), 0.0);
+    frame_count_ = 0;
+}
+
+Tensor StreamingAudioPreprocessor::process_chunk(const Tensor &samples) {
+    if (!mel_fb_built_)
+        build_mel_filterbank();
+
+    // 1. Preemphasis
+    auto s = samples.ascontiguousarray();
+    size_t n = s.shape()[0];
+    const float *src = s.typed_data<float>();
+    std::vector<float> pre(n);
+    for (size_t i = 0; i < n; ++i) {
+        float cur = src[i];
+        pre[i] = cur - 0.97f * preemph_last_sample_;
+        preemph_last_sample_ = cur;
+    }
+
+    // 2. Combine with overlap buffer
+    std::vector<float> audio_buf;
+    audio_buf.reserve(overlap_buffer_.size() + n);
+    audio_buf.insert(audio_buf.end(), overlap_buffer_.begin(),
+                     overlap_buffer_.end());
+    audio_buf.insert(audio_buf.end(), pre.begin(), pre.end());
+
+    // Calculate how many complete frames we can produce
+    int total_samples = static_cast<int>(audio_buf.size());
+    if (total_samples < config_.win_length) {
+        // Not enough for even one frame — buffer everything
+        overlap_buffer_ = std::move(audio_buf);
+        return Tensor();
+    }
+
+    int n_frames =
+        (total_samples - config_.win_length) / config_.hop_length + 1;
+    if (n_frames <= 0) {
+        overlap_buffer_ = std::move(audio_buf);
+        return Tensor();
+    }
+
+    // Save overlap for next chunk
+    int consumed = (n_frames - 1) * config_.hop_length + config_.win_length;
+    overlap_buffer_.assign(audio_buf.begin() + consumed, audio_buf.end());
+
+    // 3. STFT on the consumable portion
+    auto audio_tensor = Tensor::from_data(audio_buf.data(),
+                                           Shape{static_cast<size_t>(consumed)},
+                                           true);
+    auto window = fft::hann_window(config_.win_length, /*periodic=*/false);
+    auto stft_out = fft::stft(audio_tensor, config_.n_fft, config_.hop_length,
+                              config_.win_length, window, /*center=*/false,
+                              /*pad_mode=*/"reflect");
+
+    // 4. Power spectrum
+    auto magnitudes = ops::abs(stft_out);
+    auto power = magnitudes * magnitudes;
+
+    // 5. Mel filterbank
+    auto mel_spec = ops::matmul(mel_fb_.transpose(), power);
+
+    // 6. Log
+    constexpr float LOG_GUARD = 5.96046448e-8f;
+    auto log_mel = ops::log(mel_spec + LOG_GUARD);
+
+    // 7. Transpose and add batch dim: (n_mels, n_frames) -> (1, n_frames,
+    // n_mels)
+    auto result = log_mel.transpose().unsqueeze(0);
     return result;
 }
 
