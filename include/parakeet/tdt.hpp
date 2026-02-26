@@ -70,12 +70,12 @@ class ParakeetTDT : public Module {
 std::vector<std::vector<int>>
 tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
                   const Tensor &encoder_out, const std::vector<int> &durations,
-                  int blank_id = 0, int max_symbols_per_step = 10);
+                  int blank_id = 1024, int max_symbols_per_step = 10);
 
 // Convenience: decode using a full ParakeetTDT model.
 std::vector<std::vector<int>>
 tdt_greedy_decode(ParakeetTDT &model, const Tensor &encoder_out,
-                  const std::vector<int> &durations, int blank_id = 0,
+                  const std::vector<int> &durations, int blank_id = 1024,
                   int max_symbols_per_step = 10);
 
 } // namespace parakeet

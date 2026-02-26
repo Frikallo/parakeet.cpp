@@ -30,18 +30,13 @@ std::string Tokenizer::decode(const std::vector<int> &token_ids) const {
     std::string result;
 
     for (int id : token_ids) {
-        // Skip blank token (ID 0)
-        if (id == 0)
-            continue;
-
-        // Token IDs are 1-indexed: ID N -> pieces_[N-1]
-        int piece_idx = id - 1;
-        if (piece_idx < 0 || piece_idx >= static_cast<int>(pieces_.size())) {
+        // Token IDs are 0-indexed: ID N -> pieces_[N]
+        if (id < 0 || id >= static_cast<int>(pieces_.size())) {
             result += "[" + std::to_string(id) + "]";
             continue;
         }
 
-        const std::string &piece = pieces_[piece_idx];
+        const std::string &piece = pieces_[id];
         result += piece;
     }
 

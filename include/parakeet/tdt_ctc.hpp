@@ -48,7 +48,7 @@ class ParakeetTDTCTC : public Module {
 // TDT greedy decode using the TDT head of a ParakeetTDTCTC model.
 std::vector<std::vector<int>>
 tdt_greedy_decode(ParakeetTDTCTC &model, const Tensor &encoder_out,
-                  const std::vector<int> &durations, int blank_id = 0,
+                  const std::vector<int> &durations, int blank_id = 1024,
                   int max_symbols_per_step = 10);
 
 } // namespace parakeet

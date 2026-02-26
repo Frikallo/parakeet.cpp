@@ -67,7 +67,11 @@ std::vector<std::vector<int>> rnnt_greedy_decode(ParakeetRNNT &model,
 
         // Initialize LSTM states to zeros
         int num_layers = model.prediction().config().num_lstm_layers;
+        size_t hs = model.prediction().config().pred_hidden;
         std::vector<LSTMState> states(num_layers);
+        for (int l = 0; l < num_layers; ++l) {
+            states[l] = {Tensor::zeros({1, hs}), Tensor::zeros({1, hs})};
+        }
 
         // Start with blank token
         auto token = Tensor::zeros({1}, DType::Int32);

@@ -85,6 +85,10 @@ def build_conformer_layer_map(layer_idx):
     # Positional projection (no bias)
     m[f"{n}.self_attn.linear_pos.weight"] = f"{a}.attn_.pos_proj_.weight"
 
+    # Relative position biases
+    m[f"{n}.self_attn.pos_bias_u"] = f"{a}.attn_.pos_bias_u_"
+    m[f"{n}.self_attn.pos_bias_v"] = f"{a}.attn_.pos_bias_v_"
+
     # Conv module — NeMo uses "conv." not "conv_module."
     for param in ("weight", "bias"):
         m[f"{n}.norm_conv.{param}"] = f"{a}.conv_.norm_.{param}"
@@ -186,11 +190,7 @@ SKIP_PREFIXES = (
 
 SKIP_KEYS = set()
 
-# pos_bias_u and pos_bias_v are NeMo-specific relative position biases
-# that don't have direct axiom counterparts
-for i in range(NUM_LAYERS):
-    SKIP_KEYS.add(f"encoder.layers.{i}.self_attn.pos_bias_u")
-    SKIP_KEYS.add(f"encoder.layers.{i}.self_attn.pos_bias_v")
+# pos_bias_u and pos_bias_v are now mapped to ConformerAttention parameters
 
 # LSTM biases are handled specially (merged)
 LSTM_BIAS_KEYS = {

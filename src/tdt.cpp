@@ -45,7 +45,11 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
         auto enc = encoder_out.slice({Slice(b, b + 1)}); // (1, seq, hidden)
 
         int num_layers = prediction.config().num_lstm_layers;
+        size_t hs = prediction.config().pred_hidden;
         std::vector<LSTMState> states(num_layers);
+        for (int l = 0; l < num_layers; ++l) {
+            states[l] = {Tensor::zeros({1, hs}), Tensor::zeros({1, hs})};
+        }
 
         auto token = Tensor::zeros({1}, DType::Int32);
         int t = 0;

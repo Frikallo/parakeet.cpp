@@ -24,7 +24,7 @@ class CTCDecoder : public Module {
     Tensor operator()(const Tensor &input) const { return forward(input); }
 
   private:
-    Linear proj_;
+    Conv1d proj_; // kernel_size=1 conv, equivalent to per-frame linear
 };
 
 // ─── Parakeet CTC Model ────────────────────────────────────────────────────
@@ -52,6 +52,6 @@ class ParakeetCTC : public Module {
 // Takes (batch, seq, vocab_size) log probs, returns per-batch token sequences.
 // Applies argmax, collapses repeats, removes blank (token 0).
 std::vector<std::vector<int>> ctc_greedy_decode(const Tensor &log_probs,
-                                                int blank_id = 0);
+                                                int blank_id = 1024);
 
 } // namespace parakeet

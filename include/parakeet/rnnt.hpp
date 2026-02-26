@@ -86,7 +86,7 @@ class ParakeetRNNT : public Module {
 // encoder_out: (batch, seq, hidden) → per-batch token sequences
 std::vector<std::vector<int>> rnnt_greedy_decode(ParakeetRNNT &model,
                                                  const Tensor &encoder_out,
-                                                 int blank_id = 0,
+                                                 int blank_id = 1024,
                                                  int max_symbols_per_step = 10);
 
 } // namespace parakeet

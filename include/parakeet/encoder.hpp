@@ -14,7 +14,7 @@ using namespace axiom::nn;
 
 class FeedForward : public Module {
   public:
-    FeedForward();
+    explicit FeedForward(float dropout = 0.1f);
 
     Tensor forward(const Tensor &input) const;
     Tensor operator()(const Tensor &input) const { return forward(input); }
@@ -30,7 +30,7 @@ class FeedForward : public Module {
 
 class ConformerConvModule : public Module {
   public:
-    ConformerConvModule();
+    explicit ConformerConvModule(int groups = 1, float dropout = 0.1f);
 
     Tensor forward(const Tensor &input) const;
     Tensor operator()(const Tensor &input) const { return forward(input); }
@@ -48,12 +48,13 @@ class ConformerConvModule : public Module {
 
 class ConformerAttention : public Module {
   public:
-    ConformerAttention();
+    explicit ConformerAttention(int num_heads = 8, float dropout = 0.1f);
 
-    Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
-    Tensor operator()(const Tensor &input,
+    Tensor forward(const Tensor &input, const Tensor &pos_emb,
+                   const Tensor &mask = Tensor()) const;
+    Tensor operator()(const Tensor &input, const Tensor &pos_emb,
                       const Tensor &mask = Tensor()) const {
-        return forward(input, mask);
+        return forward(input, pos_emb, mask);
     }
 
   private:
@@ -61,18 +62,27 @@ class ConformerAttention : public Module {
     MultiHeadAttention mha_;
     Linear pos_proj_;
     Dropout dropout_;
+    Tensor pos_bias_u_; // (num_heads, head_dim) — learned position bias
+    Tensor pos_bias_v_; // (num_heads, head_dim) — learned position bias
+
+    // Relative position attention (bypasses mha_.forward)
+    Tensor rel_position_attention(const Tensor &query, const Tensor &key,
+                                  const Tensor &value, const Tensor &pos_emb,
+                                  const Tensor &mask) const;
+    static Tensor rel_shift(const Tensor &x);
 };
 
 // ─── Conformer Block ────────────────────────────────────────────────────────
 
 class ConformerBlock : public Module {
   public:
-    ConformerBlock();
+    explicit ConformerBlock(const EncoderConfig &config = {});
 
-    Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
-    Tensor operator()(const Tensor &input,
+    Tensor forward(const Tensor &input, const Tensor &pos_emb,
+                   const Tensor &mask = Tensor()) const;
+    Tensor operator()(const Tensor &input, const Tensor &pos_emb,
                       const Tensor &mask = Tensor()) const {
-        return forward(input, mask);
+        return forward(input, pos_emb, mask);
     }
 
   private:
@@ -83,19 +93,19 @@ class ConformerBlock : public Module {
     LayerNorm final_norm_;
 };
 
-// ─── Convolutional Subsampling (Conv2d, matches NeMo FastConformer) ─────────
+// ─── Convolutional Subsampling (Conv2d, matches NeMo FastConformer 110M) ────
 //
 // NeMo structure (nn.Sequential indices):
-//   [0] Conv2d(1, C, 3, stride=2, pad=1)        — regular
-//   [1] activation
-//   [2] Conv2d(C, C, 3, groups=C, stride=1, pad=1) — depthwise
-//   [3] Conv2d(C, C, 3, stride=2, pad=1)        — regular
-//   [4] activation
-//   [5] Conv2d(C, C, 3, groups=C, stride=1, pad=1) — depthwise
-//   [6] Conv2d(C, C, 3, stride=2, pad=1)        — regular
-//   [7] activation
-//   [8] Conv2d(C, C, 3, groups=C, stride=1, pad=1) — depthwise
-//   Linear(C * ceil(mel_bins/8), d_model)        — projection
+//   [0] Conv2d(1, C, 3, stride=2, pad=1)              — regular strided
+//   [1] SiLU
+//   [2] Conv2d(C, C, 3, groups=C, stride=2, pad=1)    — depthwise strided
+//   [3] Conv2d(C, C, 1)                                — pointwise
+//   [4] SiLU
+//   [5] Conv2d(C, C, 3, groups=C, stride=2, pad=1)    — depthwise strided
+//   [6] Conv2d(C, C, 1)                                — pointwise
+//   Linear(C * mel_bins/8, d_model)                    — projection
+//
+// Total downsample: stride-2 × 3 = 8×
 
 class ConvSubsampling : public Module {
   public:
@@ -106,10 +116,18 @@ class ConvSubsampling : public Module {
     Tensor operator()(const Tensor &input) const { return forward(input); }
 
   private:
-    Conv2d conv1_, conv2_, conv3_; // regular convs (stride=2)
-    Conv2d dw1_, dw2_, dw3_;       // depthwise convs (groups=channels)
+    Conv2d conv1_;         // regular strided 3×3 (stride=2)
+    Conv2d dw1_, dw2_;     // depthwise strided 3×3 (stride=2, groups=C)
+    Conv2d conv2_, conv3_; // pointwise 1×1 (stride=1)
     Linear proj_;
 };
+
+// ─── Sinusoidal Positional Embedding ──────────────────────────────────────
+
+// Generate sinusoidal position embeddings for relative positions.
+// Returns (2*seq_len - 1, d_model) encoding relative positions -(seq_len-1) to
+// +(seq_len-1).
+Tensor sinusoidal_position_embedding(int seq_len, int d_model);
 
 // ─── FastConformer Encoder ──────────────────────────────────────────────────
 
