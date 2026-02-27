@@ -4,7 +4,7 @@ Fast speech recognition with NVIDIA's [Parakeet](https://huggingface.co/collecti
 
 Built on [axiom](https://github.com/noahkay13/axiom) — a lightweight tensor library with automatic Metal GPU acceleration. No ONNX runtime, no Python runtime, no heavyweight dependencies. Just C++ and one tensor library that outruns PyTorch MPS.
 
-**~13ms encoder inference on Apple Silicon GPU** — 2.5x faster than PyTorch MPS (32ms).
+**~27ms encoder inference on Apple Silicon GPU** for 10s audio (110M model) — 96x faster than CPU.
 
 ## Supported Models
 
@@ -332,15 +332,46 @@ Built on a cache-aware streaming FastConformer encoder with causal convolutions 
 
 ## Benchmarks
 
-Measured on Apple M3 16GB, 110M parameter model, ~10s audio clip:
+Measured on Apple M3 16GB with simulated audio input (`Tensor::randn`). Times are per-encoder-forward-pass (Sortformer: full forward pass).
 
-| Stage | CPU | GPU (Metal) |
-|-------|-----|-------------|
-| Preprocessing | ~25ms | ~25ms |
-| Encoder | ~1848ms | **~13ms** |
-| CTC decode | ~2ms | ~2ms |
+**Encoder throughput — 10s audio:**
 
-**GPU encoder is ~140x faster than CPU and 2.5x faster than PyTorch MPS** — powered entirely by axiom's Metal graph compiler which fuses the full encoder into optimized MPSGraph operations.
+| Model | Params | CPU (ms) | GPU (ms) | GPU Speedup |
+|-------|--------|----------|----------|-------------|
+| 110m (TDT-CTC) | 110M | 2,581 | 27 | **96x** |
+| tdt-600m | 600M | 10,779 | 520 | **21x** |
+| rnnt-600m | 600M | 10,648 | 1,468 | **7x** |
+| sortformer | 117M | 3,195 | 479 | **7x** |
+
+**110m GPU scaling across audio lengths:**
+
+| Audio | CPU (ms) | GPU (ms) | RTF | Throughput |
+|-------|----------|----------|-----|------------|
+| 1s | 262 | 24 | 0.024 | 41x |
+| 5s | 1,222 | 26 | 0.005 | 190x |
+| 10s | 2,581 | 27 | 0.003 | 370x |
+| 30s | 10,061 | 32 | 0.001 | 935x |
+| 60s | 26,559 | 72 | 0.001 | 833x |
+
+GPU acceleration powered by axiom's Metal graph compiler which fuses the full encoder into optimized MPSGraph operations.
+
+### Running benchmarks
+
+```bash
+# Full suite
+make bench ARGS="--110m=models/model.safetensors --tdt-600m=models/tdt.safetensors"
+
+# Single model
+make bench-single ARGS="--110m=models/model.safetensors --benchmark_filter=110m"
+
+# Markdown table output
+./build/parakeet_bench --110m=models/model.safetensors --markdown
+
+# Skip GPU benchmarks
+./build/parakeet_bench --110m=models/model.safetensors --no-gpu
+```
+
+Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. All Google Benchmark flags (`--benchmark_filter`, `--benchmark_format=json`, `--benchmark_repetitions=N`) are passed through.
 
 ## Notes
 
