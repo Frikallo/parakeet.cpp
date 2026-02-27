@@ -94,9 +94,10 @@ inline TDTCTCConfig make_110m_config() {
     return cfg;
 }
 
-// nvidia/parakeet-tdt-0.6b-v2 (600M params, multilingual)
+// nvidia/parakeet-tdt-0.6b-v3 (600M params, multilingual, 128 mel bins)
 inline TDTConfig make_tdt_600m_config() {
     TDTConfig cfg;
+    cfg.encoder.mel_bins = 128;
     cfg.encoder.hidden_size = 1024;
     cfg.encoder.num_layers = 24;
     cfg.encoder.num_heads = 8;
@@ -111,6 +112,25 @@ inline TDTConfig make_tdt_600m_config() {
     cfg.joint.joint_hidden = 640;
     cfg.joint.vocab_size = 8193;
     cfg.durations = {0, 1, 2, 3, 4};
+    return cfg;
+}
+
+// nvidia/parakeet-rnnt-0.6b (600M params, English RNNT)
+inline RNNTConfig make_rnnt_600m_config() {
+    RNNTConfig cfg;
+    cfg.encoder.hidden_size = 1024;
+    cfg.encoder.num_layers = 24;
+    cfg.encoder.num_heads = 8;
+    cfg.encoder.ffn_intermediate = 4096;
+    cfg.encoder.subsampling_channels = 256;
+    cfg.encoder.conv_kernel_size = 9;
+    cfg.prediction.vocab_size = 1025;
+    cfg.prediction.pred_hidden = 640;
+    cfg.prediction.num_lstm_layers = 2;
+    cfg.joint.encoder_hidden = 1024;
+    cfg.joint.pred_hidden = 640;
+    cfg.joint.joint_hidden = 640;
+    cfg.joint.vocab_size = 1025;
     return cfg;
 }
 

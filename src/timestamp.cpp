@@ -2,7 +2,8 @@
 
 namespace parakeet {
 
-// ─── Word-Level Grouping ──────────────────────────────────────────────────────
+// ─── Word-Level Grouping
+// ──────────────────────────────────────────────────────
 
 // SentencePiece word boundary marker: U+2581 (▁) encoded as 3 bytes
 static const std::string SP_MARKER = "\xe2\x96\x81";

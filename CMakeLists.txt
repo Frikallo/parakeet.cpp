@@ -45,3 +45,21 @@ target_link_libraries(parakeet PRIVATE parakeet_lib)
 
 install(TARGETS parakeet parakeet_lib DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
+
+# Tests
+option(PARAKEET_BUILD_TESTS "Build parakeet tests" ON)
+if(PARAKEET_BUILD_TESTS)
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.14.0
+    )
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
+    enable_testing()
+    add_executable(parakeet_tests tests/test_all.cpp)
+    target_link_libraries(parakeet_tests PRIVATE parakeet_lib GTest::gtest GTest::gtest_main)
+    add_test(NAME parakeet_tests COMMAND parakeet_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()

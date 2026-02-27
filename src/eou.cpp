@@ -12,12 +12,10 @@ ParakeetEOU::ParakeetEOU(const EOUConfig &config)
 
 // ─── Streaming RNNT/TDT Decode ──────────────────────────────────────────────
 
-std::vector<int>
-rnnt_streaming_decode_chunk(RNNTPrediction &prediction, TDTJoint &joint,
-                            const Tensor &encoder_chunk,
-                            const std::vector<int> &durations,
-                            StreamingDecodeState &state, int blank_id,
-                            int max_symbols_per_step) {
+std::vector<int> rnnt_streaming_decode_chunk(
+    RNNTPrediction &prediction, TDTJoint &joint, const Tensor &encoder_chunk,
+    const std::vector<int> &durations, StreamingDecodeState &state,
+    int blank_id, int max_symbols_per_step) {
     if (!state.initialized) {
         int num_layers = prediction.config().num_lstm_layers;
         size_t hs = prediction.config().pred_hidden;
@@ -44,8 +42,7 @@ rnnt_streaming_decode_chunk(RNNTPrediction &prediction, TDTJoint &joint,
 
             auto [label_lp, dur_lp] = joint.forward(enc_t, pred);
 
-            auto best_label =
-                ops::argmax(label_lp.squeeze(0).squeeze(0), -1);
+            auto best_label = ops::argmax(label_lp.squeeze(0).squeeze(0), -1);
             auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
 
             int token_id = best_label.item<int>();

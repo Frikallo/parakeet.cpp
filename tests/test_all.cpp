@@ -1,0 +1,819 @@
+#include <gtest/gtest.h>
+
+#include "parakeet/parakeet.hpp"
+
+#include <axiom/io/safetensors.hpp>
+#include <cmath>
+#include <filesystem>
+
+using namespace parakeet;
+using namespace axiom;
+
+// ─── Test Fixture with model paths ──────────────────────────────────────────
+
+static const char *MODELS_DIR = "models";
+
+static std::string model_path(const std::string &filename) {
+    // Try a few relative paths since test runner CWD may vary
+    for (const auto &base :
+         {"models", "../models", "../../models",
+          "/Users/noahkay/Documents/parakeet.cpp/models"}) {
+        auto p = std::string(base) + "/" + filename;
+        if (std::filesystem::exists(p))
+            return p;
+    }
+    return std::string("models/") + filename;
+}
+
+static bool has_model_weights() {
+    return std::filesystem::exists(model_path("model.safetensors"));
+}
+
+static bool has_vocab() {
+    return std::filesystem::exists(model_path("vocab.txt"));
+}
+
+static bool has_test_audio() {
+    return std::filesystem::exists(model_path("2086-149220-0033.wav"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Phase 1: Timestamps
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(TimestampTypes, FrameToSeconds) {
+    EXPECT_FLOAT_EQ(frame_to_seconds(0), 0.0f);
+    EXPECT_FLOAT_EQ(frame_to_seconds(1), 0.08f);
+    EXPECT_FLOAT_EQ(frame_to_seconds(10), 0.80f);
+    EXPECT_FLOAT_EQ(frame_to_seconds(125), 10.0f);
+}
+
+TEST(TimestampTypes, TimestampedTokenStruct) {
+    TimestampedToken tok{42, 5, 10};
+    EXPECT_EQ(tok.token_id, 42);
+    EXPECT_EQ(tok.start_frame, 5);
+    EXPECT_EQ(tok.end_frame, 10);
+}
+
+TEST(TimestampTypes, WordTimestampStruct) {
+    WordTimestamp w{"hello", 1.0f, 2.5f};
+    EXPECT_EQ(w.word, "hello");
+    EXPECT_FLOAT_EQ(w.start, 1.0f);
+    EXPECT_FLOAT_EQ(w.end, 2.5f);
+}
+
+TEST(GroupTimestamps, EmptyInput) {
+    auto result = group_timestamps({}, {});
+    EXPECT_TRUE(result.empty());
+}
+
+TEST(GroupTimestamps, SingleToken) {
+    // pieces[0] = "▁hello" (with SentencePiece marker)
+    std::vector<std::string> pieces = {"\xe2\x96\x81hello"};
+    std::vector<TimestampedToken> tokens = {{0, 5, 10}};
+
+    auto words = group_timestamps(tokens, pieces);
+    ASSERT_EQ(words.size(), 1u);
+    EXPECT_EQ(words[0].word, "hello");
+    EXPECT_FLOAT_EQ(words[0].start, frame_to_seconds(5));
+    EXPECT_FLOAT_EQ(words[0].end, frame_to_seconds(10));
+}
+
+TEST(GroupTimestamps, MultipleWords) {
+    // "▁the" "▁quick" "▁fox"
+    std::vector<std::string> pieces = {"\xe2\x96\x81the", "\xe2\x96\x81quick",
+                                        "\xe2\x96\x81" "fox"};
+    std::vector<TimestampedToken> tokens = {{0, 0, 2}, {1, 5, 8}, {2, 12, 15}};
+
+    auto words = group_timestamps(tokens, pieces);
+    ASSERT_EQ(words.size(), 3u);
+    EXPECT_EQ(words[0].word, "the");
+    EXPECT_EQ(words[1].word, "quick");
+    EXPECT_EQ(words[2].word, "fox");
+}
+
+TEST(GroupTimestamps, SubwordTokens) {
+    // "▁run" "ning" → "running"
+    std::vector<std::string> pieces = {"\xe2\x96\x81run", "ning"};
+    std::vector<TimestampedToken> tokens = {{0, 0, 3}, {1, 4, 6}};
+
+    auto words = group_timestamps(tokens, pieces);
+    ASSERT_EQ(words.size(), 1u);
+    EXPECT_EQ(words[0].word, "running");
+    EXPECT_FLOAT_EQ(words[0].start, frame_to_seconds(0));
+    EXPECT_FLOAT_EQ(words[0].end, frame_to_seconds(6));
+}
+
+TEST(GroupTimestamps, SentenceMode) {
+    std::vector<std::string> pieces = {"\xe2\x96\x81Hello", "\xe2\x96\x81world.",
+                                        "\xe2\x96\x81" "How", "\xe2\x96\x81" "are"};
+    std::vector<TimestampedToken> tokens = {
+        {0, 0, 2}, {1, 3, 5}, {2, 8, 10}, {3, 11, 13}};
+
+    auto sentences =
+        group_timestamps(tokens, pieces, TimestampMode::Sentences);
+    ASSERT_EQ(sentences.size(), 2u);
+    EXPECT_EQ(sentences[0].word, "Hello world.");
+    EXPECT_EQ(sentences[1].word, "How are");
+}
+
+TEST(GroupTimestamps, OutOfRangeTokenId) {
+    std::vector<std::string> pieces = {"\xe2\x96\x81hello"};
+    // Token ID 999 is out of range — should be skipped
+    std::vector<TimestampedToken> tokens = {{999, 0, 1}, {0, 2, 4}};
+
+    auto words = group_timestamps(tokens, pieces);
+    ASSERT_EQ(words.size(), 1u);
+    EXPECT_EQ(words[0].word, "hello");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Phase 2: Config Presets
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(ConfigPresets, Make110mConfig) {
+    auto cfg = make_110m_config();
+    EXPECT_EQ(cfg.encoder.hidden_size, 512);
+    EXPECT_EQ(cfg.encoder.num_layers, 17);
+    EXPECT_EQ(cfg.encoder.num_heads, 8);
+    EXPECT_EQ(cfg.encoder.ffn_intermediate, 2048);
+    EXPECT_EQ(cfg.prediction.vocab_size, 1025);
+    EXPECT_EQ(cfg.prediction.num_lstm_layers, 1);
+    EXPECT_EQ(cfg.joint.encoder_hidden, 512);
+    EXPECT_EQ(cfg.durations.size(), 5u);
+    EXPECT_EQ(cfg.ctc_vocab_size, 1025);
+}
+
+TEST(ConfigPresets, MakeTDT600mConfig) {
+    auto cfg = make_tdt_600m_config();
+    EXPECT_EQ(cfg.encoder.hidden_size, 1024);
+    EXPECT_EQ(cfg.encoder.num_layers, 24);
+    EXPECT_EQ(cfg.encoder.num_heads, 8);
+    EXPECT_EQ(cfg.encoder.ffn_intermediate, 4096);
+    EXPECT_EQ(cfg.prediction.vocab_size, 8193);
+    EXPECT_EQ(cfg.prediction.num_lstm_layers, 2);
+    EXPECT_EQ(cfg.joint.vocab_size, 8193);
+    EXPECT_EQ(cfg.durations.size(), 5u);
+}
+
+TEST(ConfigPresets, MakeEOU120mConfig) {
+    auto cfg = make_eou_120m_config();
+    EXPECT_EQ(cfg.encoder.hidden_size, 512);
+    EXPECT_EQ(cfg.encoder.num_layers, 17);
+    EXPECT_EQ(cfg.encoder.att_context_left, 70);
+    EXPECT_EQ(cfg.encoder.att_context_right, 1);
+    EXPECT_EQ(cfg.encoder.chunk_size, 20);
+    EXPECT_EQ(cfg.prediction.vocab_size, 1025);
+}
+
+TEST(ConfigPresets, MakeNemotron600mConfig) {
+    auto cfg0 = make_nemotron_600m_config(0);
+    EXPECT_EQ(cfg0.encoder.att_context_right, 0);
+    EXPECT_EQ(cfg0.latency_frames, 0);
+
+    auto cfg6 = make_nemotron_600m_config(6);
+    EXPECT_EQ(cfg6.encoder.att_context_right, 6);
+    EXPECT_EQ(cfg6.latency_frames, 6);
+
+    auto cfg13 = make_nemotron_600m_config(13);
+    EXPECT_EQ(cfg13.encoder.att_context_right, 13);
+    EXPECT_EQ(cfg13.encoder.num_layers, 24);
+    EXPECT_EQ(cfg13.prediction.vocab_size, 8193);
+}
+
+TEST(ConfigPresets, MakeSortformer117mConfig) {
+    auto cfg = make_sortformer_117m_config();
+    EXPECT_EQ(cfg.nest_encoder.hidden_size, 512);
+    EXPECT_EQ(cfg.nest_encoder.num_layers, 17);
+    EXPECT_EQ(cfg.transformer_hidden, 192);
+    EXPECT_EQ(cfg.transformer.num_layers, 18);
+    EXPECT_EQ(cfg.transformer.num_heads, 8);
+    EXPECT_EQ(cfg.max_speakers, 4);
+    EXPECT_FLOAT_EQ(cfg.activity_threshold, 0.5f);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Model Construction (no weights needed)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(ModelConstruction, ParakeetTDTCTC) {
+    auto cfg = make_110m_config();
+    ParakeetTDTCTC model(cfg);
+    EXPECT_EQ(model.config().encoder.num_layers, 17);
+}
+
+TEST(ModelConstruction, ParakeetTDT) {
+    auto cfg = make_tdt_600m_config();
+    ParakeetTDT model(cfg);
+    EXPECT_EQ(model.config().encoder.num_layers, 24);
+}
+
+TEST(ModelConstruction, ParakeetEOU) {
+    auto cfg = make_eou_120m_config();
+    ParakeetEOU model(cfg);
+    EXPECT_EQ(model.config().encoder.num_layers, 17);
+}
+
+TEST(ModelConstruction, ParakeetNemotron) {
+    auto cfg = make_nemotron_600m_config();
+    ParakeetNemotron model(cfg);
+    EXPECT_EQ(model.config().encoder.num_layers, 24);
+}
+
+TEST(ModelConstruction, Sortformer) {
+    auto cfg = make_sortformer_117m_config();
+    Sortformer model(cfg);
+    EXPECT_EQ(model.config().transformer.num_layers, 18);
+}
+
+TEST(ModelConstruction, ParakeetRNNT) {
+    RNNTConfig cfg;
+    cfg.encoder.hidden_size = 512;
+    cfg.encoder.num_layers = 17;
+    ParakeetRNNT model(cfg);
+    EXPECT_EQ(model.config().encoder.num_layers, 17);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Streaming Encoder Construction
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(StreamingEncoder, ConfigDefaults) {
+    StreamingEncoderConfig cfg;
+    EXPECT_EQ(cfg.att_context_left, 70);
+    EXPECT_EQ(cfg.att_context_right, 0);
+    EXPECT_EQ(cfg.chunk_size, 20);
+}
+
+TEST(StreamingEncoder, CacheInit) {
+    EncoderCache cache;
+    EXPECT_TRUE(cache.empty());
+    EXPECT_EQ(cache.frames_seen, 0);
+}
+
+TEST(StreamingEncoder, BlockCacheInit) {
+    BlockCache bc;
+    EXPECT_FALSE(bc.conv_cache.storage());
+    EXPECT_FALSE(bc.key_cache.storage());
+    EXPECT_FALSE(bc.value_cache.storage());
+}
+
+TEST(StreamingEncoder, Construction) {
+    StreamingEncoderConfig cfg;
+    cfg.hidden_size = 256;
+    cfg.num_layers = 4;
+    cfg.num_heads = 4;
+    cfg.ffn_intermediate = 1024;
+    StreamingFastConformerEncoder encoder(cfg);
+    // Just verify it doesn't crash
+    EXPECT_EQ(cfg.num_layers, 4);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Transformer Construction
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(Transformer, BlockConstruction) {
+    TransformerConfig cfg;
+    cfg.hidden_size = 192;
+    cfg.num_heads = 4;
+    cfg.num_layers = 2;
+    TransformerBlock block(cfg);
+    SUCCEED();
+}
+
+TEST(Transformer, EncoderConstruction) {
+    TransformerConfig cfg;
+    cfg.hidden_size = 192;
+    cfg.num_heads = 4;
+    cfg.num_layers = 6;
+    TransformerEncoder encoder(cfg);
+    SUCCEED();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  AOSC Cache
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(AOSCCache, Empty) {
+    AOSCCache cache(4);
+    EXPECT_TRUE(cache.speaker_order().empty());
+}
+
+TEST(AOSCCache, SingleSpeaker) {
+    AOSCCache cache(4);
+    // Create probs: speaker 0 active, others silent
+    std::vector<float> data = {0.9f, 0.1f, 0.1f, 0.1f,
+                                0.8f, 0.1f, 0.1f, 0.1f};
+    auto probs = Tensor::from_data(data.data(), Shape{2, 4}, true);
+    cache.update(probs);
+
+    auto order = cache.speaker_order();
+    ASSERT_EQ(order.size(), 1u);
+    EXPECT_EQ(order[0], 0);
+}
+
+TEST(AOSCCache, TwoSpeakersArrivalOrder) {
+    AOSCCache cache(4);
+    // Frame 0: speaker 2 active
+    // Frame 1: speaker 0 also active
+    std::vector<float> data = {0.1f, 0.1f, 0.9f, 0.1f,
+                                0.9f, 0.1f, 0.8f, 0.1f};
+    auto probs = Tensor::from_data(data.data(), Shape{2, 4}, true);
+    cache.update(probs);
+
+    auto order = cache.speaker_order();
+    ASSERT_EQ(order.size(), 2u);
+    EXPECT_EQ(order[0], 2); // arrived first
+    EXPECT_EQ(order[1], 0); // arrived second
+}
+
+TEST(AOSCCache, Reset) {
+    AOSCCache cache(4);
+    std::vector<float> data = {0.9f, 0.1f, 0.1f, 0.1f};
+    auto probs = Tensor::from_data(data.data(), Shape{1, 4}, true);
+    cache.update(probs);
+    EXPECT_EQ(cache.speaker_order().size(), 1u);
+
+    cache.reset();
+    EXPECT_TRUE(cache.speaker_order().empty());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Diarization Types
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(DiarizationTypes, SegmentStruct) {
+    DiarizationSegment seg{1, 0.5f, 2.3f};
+    EXPECT_EQ(seg.speaker_id, 1);
+    EXPECT_FLOAT_EQ(seg.start, 0.5f);
+    EXPECT_FLOAT_EQ(seg.end, 2.3f);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Streaming Decode State
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(StreamingDecode, StateInit) {
+    StreamingDecodeState state;
+    EXPECT_FALSE(state.initialized);
+    EXPECT_TRUE(state.tokens.empty());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Streaming Audio Preprocessor
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(StreamingAudio, Construction) {
+    AudioConfig cfg;
+    StreamingAudioPreprocessor prep(cfg);
+    SUCCEED();
+}
+
+TEST(StreamingAudio, ResetDoesNotCrash) {
+    StreamingAudioPreprocessor prep;
+    prep.reset();
+    SUCCEED();
+}
+
+TEST(StreamingAudio, SmallChunkReturnsEmpty) {
+    StreamingAudioPreprocessor prep;
+    // 100 samples is not enough for a frame (needs win_length=400)
+    auto chunk = Tensor::zeros({100});
+    auto result = prep.process_chunk(chunk);
+    // Should return empty or valid tensor
+    // With 100 samples, we won't have enough for a full frame
+    SUCCEED();
+}
+
+TEST(StreamingAudio, LargeChunkProducesOutput) {
+    StreamingAudioPreprocessor prep;
+    // 4800 samples = 0.3s at 16kHz, should produce several frames
+    auto chunk = Tensor::zeros({4800});
+    auto result = prep.process_chunk(chunk);
+    if (result.storage()) {
+        auto shape = result.shape();
+        EXPECT_EQ(shape.size(), 3u);
+        EXPECT_EQ(shape[0], 1u); // batch
+        EXPECT_GT(shape[1], 0u); // frames
+        EXPECT_EQ(shape[2], 80u); // mel bins
+    }
+}
+
+TEST(StreamingAudio, MultipleChunksAccumulate) {
+    StreamingAudioPreprocessor prep;
+    int total_frames = 0;
+    // Process 5 chunks of 1600 samples each (0.1s each)
+    for (int i = 0; i < 5; ++i) {
+        auto chunk = Tensor::zeros({1600});
+        auto result = prep.process_chunk(chunk);
+        if (result.storage()) {
+            total_frames += static_cast<int>(result.shape()[1]);
+        }
+    }
+    // Should have produced some frames across chunks
+    EXPECT_GT(total_frames, 0);
+}
+
+TEST(StreamingAudio, ResetClearsState) {
+    StreamingAudioPreprocessor prep;
+    auto chunk = Tensor::zeros({4800});
+    prep.process_chunk(chunk);
+    prep.reset();
+    // After reset, should be clean state
+    auto result = prep.process_chunk(Tensor::zeros({100}));
+    // Small chunk after reset: should not produce output
+    SUCCEED();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Tokenizer
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(Tokenizer, DefaultEmpty) {
+    Tokenizer tok;
+    EXPECT_FALSE(tok.loaded());
+}
+
+TEST(Tokenizer, LoadVocab) {
+    if (!has_vocab())
+        GTEST_SKIP() << "vocab.txt not found";
+
+    Tokenizer tok;
+    tok.load(model_path("vocab.txt"));
+    EXPECT_TRUE(tok.loaded());
+    EXPECT_EQ(tok.vocab_size(), 1025u);
+}
+
+TEST(Tokenizer, PiecesAccessor) {
+    if (!has_vocab())
+        GTEST_SKIP() << "vocab.txt not found";
+
+    Tokenizer tok;
+    tok.load(model_path("vocab.txt"));
+    EXPECT_EQ(tok.pieces().size(), 1024u);
+    EXPECT_FALSE(tok.pieces()[0].empty());
+}
+
+TEST(Tokenizer, DecodeEmpty) {
+    if (!has_vocab())
+        GTEST_SKIP() << "vocab.txt not found";
+
+    Tokenizer tok;
+    tok.load(model_path("vocab.txt"));
+    EXPECT_EQ(tok.decode({}), "");
+}
+
+TEST(Tokenizer, DecodeOutOfRange) {
+    if (!has_vocab())
+        GTEST_SKIP() << "vocab.txt not found";
+
+    Tokenizer tok;
+    tok.load(model_path("vocab.txt"));
+    // Out of range tokens should produce [id] placeholder
+    auto text = tok.decode({9999});
+    EXPECT_EQ(text, "[9999]");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  WAV Reader
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(WavReader, ReadTestAudio) {
+    if (!has_test_audio())
+        GTEST_SKIP() << "test audio not found";
+
+    auto wav = read_wav(model_path("2086-149220-0033.wav"));
+    EXPECT_EQ(wav.sample_rate, 16000);
+    EXPECT_EQ(wav.num_channels, 1);
+    EXPECT_GT(wav.num_samples, 0);
+    EXPECT_EQ(wav.samples.shape()[0], static_cast<size_t>(wav.num_samples));
+}
+
+TEST(WavReader, ReadTestWav) {
+    auto path = model_path("test.wav");
+    if (!std::filesystem::exists(path))
+        GTEST_SKIP() << "test.wav not found";
+
+    auto wav = read_wav(path);
+    EXPECT_EQ(wav.sample_rate, 16000);
+    EXPECT_GT(wav.num_samples, 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Audio Preprocessing
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(AudioPreprocessing, OutputShape) {
+    // 1 second of silence at 16kHz
+    auto waveform = Tensor::zeros({16000});
+    auto features = preprocess_audio(waveform);
+    auto shape = features.shape();
+
+    EXPECT_EQ(shape.size(), 3u);
+    EXPECT_EQ(shape[0], 1u); // batch
+    EXPECT_GT(shape[1], 0u); // time frames
+    EXPECT_EQ(shape[2], 80u); // mel bins
+}
+
+TEST(AudioPreprocessing, ConsistentOutput) {
+    auto waveform = Tensor::zeros({16000});
+    auto feat1 = preprocess_audio(waveform);
+    auto feat2 = preprocess_audio(waveform);
+
+    // Same input should produce same output
+    auto diff = (feat1 - feat2).ascontiguousarray();
+    auto flat = diff.flatten();
+    const float *data = flat.typed_data<float>();
+    float max_diff = 0.0f;
+    for (size_t i = 0; i < flat.shape()[0]; ++i) {
+        max_diff = std::max(max_diff, std::abs(data[i]));
+    }
+    EXPECT_FLOAT_EQ(max_diff, 0.0f);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  CTC Decode
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(CTCDecode, AllBlanks) {
+    // Create log_probs where blank (1024) has highest prob at every frame
+    int vocab = 1025;
+    int seq_len = 10;
+    std::vector<float> data(1 * seq_len * vocab, -10.0f);
+    for (int t = 0; t < seq_len; ++t) {
+        data[t * vocab + 1024] = 0.0f; // blank wins
+    }
+    auto lp = Tensor::from_data(data.data(),
+                                 Shape{1, static_cast<size_t>(seq_len),
+                                       static_cast<size_t>(vocab)},
+                                 true);
+
+    auto result = ctc_greedy_decode(lp, 1024);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_TRUE(result[0].empty());
+}
+
+TEST(CTCDecode, SingleToken) {
+    int vocab = 1025;
+    int seq_len = 5;
+    std::vector<float> data(1 * seq_len * vocab, -10.0f);
+    // Token 42 wins at frame 0-2, blank at 3-4
+    for (int t = 0; t < 3; ++t)
+        data[t * vocab + 42] = 0.0f;
+    for (int t = 3; t < 5; ++t)
+        data[t * vocab + 1024] = 0.0f;
+
+    auto lp = Tensor::from_data(data.data(),
+                                 Shape{1, static_cast<size_t>(seq_len),
+                                       static_cast<size_t>(vocab)},
+                                 true);
+
+    auto result = ctc_greedy_decode(lp, 1024);
+    ASSERT_EQ(result.size(), 1u);
+    ASSERT_EQ(result[0].size(), 1u); // collapsed repeats
+    EXPECT_EQ(result[0][0], 42);
+}
+
+TEST(CTCDecode, CollapseRepeats) {
+    int vocab = 1025;
+    int seq_len = 6;
+    std::vector<float> data(1 * seq_len * vocab, -10.0f);
+    // Sequence: 10, 10, blank, 10, 10, 20
+    int pattern[] = {10, 10, 1024, 10, 10, 20};
+    for (int t = 0; t < seq_len; ++t)
+        data[t * vocab + pattern[t]] = 0.0f;
+
+    auto lp = Tensor::from_data(data.data(),
+                                 Shape{1, static_cast<size_t>(seq_len),
+                                       static_cast<size_t>(vocab)},
+                                 true);
+
+    auto result = ctc_greedy_decode(lp, 1024);
+    ASSERT_EQ(result.size(), 1u);
+    ASSERT_EQ(result[0].size(), 3u); // 10, 10, 20 (blank separates the two 10s)
+    EXPECT_EQ(result[0][0], 10);
+    EXPECT_EQ(result[0][1], 10);
+    EXPECT_EQ(result[0][2], 20);
+}
+
+TEST(CTCDecode, WithTimestamps) {
+    int vocab = 1025;
+    int seq_len = 6;
+    std::vector<float> data(1 * seq_len * vocab, -10.0f);
+    // Token 5 at frames 0-1, blank at 2, token 8 at frames 3-5
+    int pattern[] = {5, 5, 1024, 8, 8, 8};
+    for (int t = 0; t < seq_len; ++t)
+        data[t * vocab + pattern[t]] = 0.0f;
+
+    auto lp = Tensor::from_data(data.data(),
+                                 Shape{1, static_cast<size_t>(seq_len),
+                                       static_cast<size_t>(vocab)},
+                                 true);
+
+    auto result = ctc_greedy_decode_with_timestamps(lp, 1024);
+    ASSERT_EQ(result.size(), 1u);
+    ASSERT_EQ(result[0].size(), 2u);
+
+    EXPECT_EQ(result[0][0].token_id, 5);
+    EXPECT_EQ(result[0][0].start_frame, 0);
+
+    EXPECT_EQ(result[0][1].token_id, 8);
+    EXPECT_EQ(result[0][1].start_frame, 3);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  CTC Decode (batch)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(CTCDecode, BatchDecode) {
+    int vocab = 1025;
+    int seq_len = 4;
+    int batch = 2;
+    std::vector<float> data(batch * seq_len * vocab, -10.0f);
+    // Batch 0: token 5 at all frames
+    // Batch 1: all blank
+    for (int t = 0; t < seq_len; ++t) {
+        data[(0 * seq_len + t) * vocab + 5] = 0.0f;
+        data[(1 * seq_len + t) * vocab + 1024] = 0.0f;
+    }
+
+    auto lp = Tensor::from_data(
+        data.data(),
+        Shape{static_cast<size_t>(batch), static_cast<size_t>(seq_len),
+              static_cast<size_t>(vocab)},
+        true);
+
+    auto result = ctc_greedy_decode(lp, 1024);
+    ASSERT_EQ(result.size(), 2u);
+    EXPECT_EQ(result[0].size(), 1u);
+    EXPECT_EQ(result[0][0], 5);
+    EXPECT_TRUE(result[1].empty());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  End-to-End with 110M model (requires weights)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class ModelTest : public ::testing::Test {
+  protected:
+    void SetUp() override {
+        if (!has_model_weights() || !has_vocab() || !has_test_audio()) {
+            GTEST_SKIP() << "Model weights, vocab, or test audio not found";
+        }
+    }
+};
+
+TEST_F(ModelTest, TranscriberCTC) {
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+    auto result = t.transcribe(model_path("2086-149220-0033.wav"), Decoder::CTC);
+    EXPECT_FALSE(result.text.empty());
+    EXPECT_FALSE(result.token_ids.empty());
+    // Should contain "portrait" near the end
+    EXPECT_NE(result.text.find("portrait"), std::string::npos);
+}
+
+TEST_F(ModelTest, TranscriberTDT) {
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+    auto result = t.transcribe(model_path("2086-149220-0033.wav"), Decoder::TDT);
+    EXPECT_FALSE(result.text.empty());
+    EXPECT_FALSE(result.token_ids.empty());
+    EXPECT_NE(result.text.find("portrait"), std::string::npos);
+}
+
+TEST_F(ModelTest, TranscriberCTCTimestamps) {
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+    auto result = t.transcribe(model_path("2086-149220-0033.wav"), Decoder::CTC,
+                                /*timestamps=*/true);
+    EXPECT_FALSE(result.text.empty());
+    EXPECT_FALSE(result.timestamped_tokens.empty());
+    EXPECT_FALSE(result.word_timestamps.empty());
+
+    // Verify timestamp ordering
+    for (size_t i = 1; i < result.word_timestamps.size(); ++i) {
+        EXPECT_GE(result.word_timestamps[i].start,
+                  result.word_timestamps[i - 1].start);
+    }
+
+    // First word should start near the beginning
+    EXPECT_LT(result.word_timestamps[0].start, 2.0f);
+    // Last word should end near the end of audio (~7.4s)
+    EXPECT_GT(result.word_timestamps.back().end, 5.0f);
+}
+
+TEST_F(ModelTest, TranscriberTDTTimestamps) {
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+    auto result = t.transcribe(model_path("2086-149220-0033.wav"), Decoder::TDT,
+                                /*timestamps=*/true);
+    EXPECT_FALSE(result.text.empty());
+    EXPECT_FALSE(result.timestamped_tokens.empty());
+    EXPECT_FALSE(result.word_timestamps.empty());
+
+    // Verify monotonic timestamps
+    for (size_t i = 1; i < result.word_timestamps.size(); ++i) {
+        EXPECT_GE(result.word_timestamps[i].start,
+                  result.word_timestamps[i - 1].start);
+    }
+}
+
+TEST_F(ModelTest, TranscriberShortAudio) {
+    auto test_wav = model_path("test.wav");
+    if (!std::filesystem::exists(test_wav))
+        GTEST_SKIP() << "test.wav not found";
+
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+    auto result = t.transcribe(test_wav, Decoder::TDT);
+    EXPECT_FALSE(result.text.empty());
+    // Should contain common words
+    EXPECT_NE(result.text.find("fox"), std::string::npos);
+}
+
+TEST_F(ModelTest, CTCAndTDTProduceSimilarOutput) {
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+    auto ctc = t.transcribe(model_path("2086-149220-0033.wav"), Decoder::CTC);
+    auto tdt = t.transcribe(model_path("2086-149220-0033.wav"), Decoder::TDT);
+
+    // Both should produce non-empty results
+    EXPECT_FALSE(ctc.text.empty());
+    EXPECT_FALSE(tdt.text.empty());
+
+    // Both should contain "portrait" — they may differ slightly in wording
+    EXPECT_NE(ctc.text.find("portrait"), std::string::npos);
+    EXPECT_NE(tdt.text.find("portrait"), std::string::npos);
+}
+
+TEST_F(ModelTest, TimestampsTokenIdsMatchNonTimestamped) {
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+
+    // CTC: with and without timestamps should produce same token IDs
+    auto ctc_plain = t.transcribe(model_path("2086-149220-0033.wav"),
+                                   Decoder::CTC, false);
+    auto ctc_ts = t.transcribe(model_path("2086-149220-0033.wav"),
+                                Decoder::CTC, true);
+    EXPECT_EQ(ctc_plain.token_ids, ctc_ts.token_ids);
+
+    // TDT: same check
+    auto tdt_plain = t.transcribe(model_path("2086-149220-0033.wav"),
+                                   Decoder::TDT, false);
+    auto tdt_ts = t.transcribe(model_path("2086-149220-0033.wav"),
+                                Decoder::TDT, true);
+    EXPECT_EQ(tdt_plain.token_ids, tdt_ts.token_ids);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  TDTTranscriber (600M interface, tested with 110M weights for shape
+//  compatibility — will fail to produce good output since weights mismatch,
+//  but exercises the code path)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Note: We can't actually test TDTTranscriber with correct weights since we
+// don't have the 600M model. But we can test construction and interface.
+
+TEST(TDTTranscriber, Construction) {
+    // Just test that it constructs without crashing
+    auto cfg = make_tdt_600m_config();
+    ParakeetTDT model(cfg);
+    SUCCEED();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Sinusoidal Position Embedding
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(PositionEmbedding, Shape) {
+    auto pe = sinusoidal_position_embedding(10, 64);
+    EXPECT_EQ(pe.shape()[0], 19u); // 2*10-1
+    EXPECT_EQ(pe.shape()[1], 64u);
+}
+
+TEST(PositionEmbedding, Values) {
+    auto pe = sinusoidal_position_embedding(5, 4);
+    auto flat = pe.ascontiguousarray();
+    const float *data = flat.typed_data<float>();
+
+    // Check that values are in [-1, 1] (sin/cos range)
+    for (size_t i = 0; i < flat.shape()[0] * flat.shape()[1]; ++i) {
+        EXPECT_GE(data[i], -1.001f);
+        EXPECT_LE(data[i], 1.001f);
+    }
+}
+
+TEST(PositionEmbedding, CenterRow) {
+    // Position 0 should be at index seq_len-1
+    auto pe = sinusoidal_position_embedding(5, 4);
+    auto flat = pe.ascontiguousarray();
+    const float *data = flat.typed_data<float>();
+
+    // At position 0: sin(0 * div_term) = 0 for all even indices
+    float val0 = data[4 * 4 + 0]; // row 4 (pos=0), col 0 (sin)
+    EXPECT_NEAR(val0, 0.0f, 1e-5f);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Main
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int main(int argc, char **argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}

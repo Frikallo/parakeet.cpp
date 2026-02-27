@@ -6,8 +6,9 @@ namespace parakeet {
 
 // ─── CausalConformerConvModule ───────────────────────────────────────────────
 
-CausalConformerConvModule::CausalConformerConvModule(int groups, int kernel_size,
-                                                       float dropout)
+CausalConformerConvModule::CausalConformerConvModule(int groups,
+                                                     int kernel_size,
+                                                     float dropout)
     : kernel_size_(kernel_size), pointwise_conv1_(/*stride=*/1),
       depthwise_conv_(/*stride=*/1, /*padding=*/0, /*dilation=*/1,
                       /*groups=*/groups),
@@ -38,7 +39,7 @@ Tensor CausalConformerConvModule::forward(const Tensor &input) const {
 }
 
 Tensor CausalConformerConvModule::forward_cached(const Tensor &input,
-                                                  Tensor &conv_cache) const {
+                                                 Tensor &conv_cache) const {
     auto x = norm_(input);
     x = x.permute({0, 2, 1}); // (batch, hidden, seq)
 
@@ -62,9 +63,8 @@ Tensor CausalConformerConvModule::forward_cached(const Tensor &input,
     // Update cache: last (kernel_size - 1) frames
     auto x_shape = x.shape();
     int total = static_cast<int>(x_shape[2]);
-    conv_cache =
-        x.slice({Slice(), Slice(), Slice(total - cache_len, total)})
-            .ascontiguousarray();
+    conv_cache = x.slice({Slice(), Slice(), Slice(total - cache_len, total)})
+                     .ascontiguousarray();
 
     x = depthwise_conv_(x);
     x = batch_norm_(x);
@@ -151,8 +151,8 @@ Tensor StreamingConformerAttention::rel_position_attention(
 }
 
 Tensor StreamingConformerAttention::forward(const Tensor &input,
-                                             const Tensor &pos_emb,
-                                             const Tensor &mask) const {
+                                            const Tensor &pos_emb,
+                                            const Tensor &mask) const {
     auto x = norm_(input);
     x = rel_position_attention(x, x, x, pos_emb, mask);
     x = dropout_(x);
@@ -195,10 +195,12 @@ Tensor StreamingConformerAttention::forward_cached(
     if (static_cast<int>(kv_len) > max_cache) {
         int start = static_cast<int>(kv_len) - max_cache;
         key_cache =
-            k.slice({Slice(), Slice(), Slice(start, static_cast<int64_t>(kv_len)), Slice()})
+            k.slice({Slice(), Slice(),
+                     Slice(start, static_cast<int64_t>(kv_len)), Slice()})
                 .ascontiguousarray();
         value_cache =
-            v.slice({Slice(), Slice(), Slice(start, static_cast<int64_t>(kv_len)), Slice()})
+            v.slice({Slice(), Slice(),
+                     Slice(start, static_cast<int64_t>(kv_len)), Slice()})
                 .ascontiguousarray();
     } else {
         key_cache = k.ascontiguousarray();
@@ -222,7 +224,8 @@ Tensor StreamingConformerAttention::forward_cached(
     // Slice to match kv_len if needed
     if (pos_score.shape()[3] > kv_len) {
         // Take the rightmost kv_len columns
-        int start = static_cast<int>(pos_score.shape()[3]) - static_cast<int>(kv_len);
+        int start =
+            static_cast<int>(pos_score.shape()[3]) - static_cast<int>(kv_len);
         pos_score = pos_score.slice(
             {Slice(), Slice(), Slice(),
              Slice(start, static_cast<int64_t>(pos_score.shape()[3]))});
@@ -231,8 +234,8 @@ Tensor StreamingConformerAttention::forward_cached(
     auto scores = (content_score + pos_score) * scale;
 
     // Build attention mask for bounded context
-    // Query positions attend to KV positions within [q_pos - left, q_pos + right]
-    // relative to the KV sequence
+    // Query positions attend to KV positions within [q_pos - left, q_pos +
+    // right] relative to the KV sequence
     if (att_context_left >= 0 || att_context_right >= 0) {
         int q_len = static_cast<int>(chunk_len);
         int kv = static_cast<int>(kv_len);
@@ -280,8 +283,8 @@ StreamingConformerBlock::StreamingConformerBlock(
 }
 
 Tensor StreamingConformerBlock::forward(const Tensor &input,
-                                         const Tensor &pos_emb,
-                                         const Tensor &mask) const {
+                                        const Tensor &pos_emb,
+                                        const Tensor &mask) const {
     auto x = ffn1_(input);
     x = attn_(x, pos_emb, mask);
     x = conv_(x);
@@ -291,13 +294,13 @@ Tensor StreamingConformerBlock::forward(const Tensor &input,
 }
 
 Tensor StreamingConformerBlock::forward_cached(const Tensor &input,
-                                                const Tensor &pos_emb,
-                                                BlockCache &cache,
-                                                int att_context_left,
-                                                int att_context_right) const {
+                                               const Tensor &pos_emb,
+                                               BlockCache &cache,
+                                               int att_context_left,
+                                               int att_context_right) const {
     auto x = ffn1_(input);
     x = attn_.forward_cached(x, pos_emb, cache.key_cache, cache.value_cache,
-                              att_context_left, att_context_right);
+                             att_context_left, att_context_right);
     x = conv_.forward_cached(x, cache.conv_cache);
     x = ffn2_(x);
     x = final_norm_(x);
@@ -306,27 +309,33 @@ Tensor StreamingConformerBlock::forward_cached(const Tensor &input,
 
 // ─── CausalConvSubsampling ──────────────────────────────────────────────────
 
-CausalConvSubsampling::CausalConvSubsampling(int channels)
+CausalConvSubsampling::CausalConvSubsampling(int channels,
+                                             SubsamplingActivation act)
     : conv1_(/*stride=*/{2, 2}, /*padding=*/{1, 1}),
       dw1_(/*stride=*/{2, 2}, /*padding=*/{1, 1}, /*dilation=*/{1, 1},
            /*groups=*/channels),
       dw2_(/*stride=*/{2, 2}, /*padding=*/{1, 1}, /*dilation=*/{1, 1},
            /*groups=*/channels),
       conv2_(/*stride=*/{1, 1}, /*padding=*/{0, 0}),
-      conv3_(/*stride=*/{1, 1}, /*padding=*/{0, 0}), proj_(true) {
+      conv3_(/*stride=*/{1, 1}, /*padding=*/{0, 0}), proj_(true),
+      activation_(act) {
     AX_REGISTER_MODULES(conv1_, dw1_, conv2_, dw2_, conv3_, proj_);
 }
 
 Tensor CausalConvSubsampling::forward(const Tensor &input) const {
+    auto act = [this](const Tensor &t) {
+        return activation_ == SubsamplingActivation::ReLU ? ops::relu(t)
+                                                          : ops::silu(t);
+    };
     auto x = input.unsqueeze(1);
     x = conv1_(x);
-    x = ops::silu(x);
+    x = act(x);
     x = dw1_(x);
     x = conv2_(x);
-    x = ops::silu(x);
+    x = act(x);
     x = dw2_(x);
     x = conv3_(x);
-    x = ops::silu(x);
+    x = act(x);
 
     auto shape = x.shape();
     x = x.permute({0, 2, 1, 3});
@@ -337,7 +346,7 @@ Tensor CausalConvSubsampling::forward(const Tensor &input) const {
 }
 
 Tensor CausalConvSubsampling::forward_cached(const Tensor &input,
-                                              Tensor &cache) const {
+                                             Tensor &cache) const {
     // For streaming: concatenate leftover frames from previous chunk
     Tensor mel_input;
     if (cache.storage()) {
@@ -349,9 +358,10 @@ Tensor CausalConvSubsampling::forward_cached(const Tensor &input,
     // Subsampling factor is 8. Keep leftover frames that don't fill a full
     // stride.
     int total_frames = static_cast<int>(mel_input.shape()[1]);
-    // After 3 stride-2 convs: output_len = floor((total + 2*pad - kernel) / stride + 1)
-    // The exact number of consumed frames depends on the conv architecture.
-    // For simplicity, we process what we can and cache the remainder.
+    // After 3 stride-2 convs: output_len = floor((total + 2*pad - kernel) /
+    // stride + 1) The exact number of consumed frames depends on the conv
+    // architecture. For simplicity, we process what we can and cache the
+    // remainder.
     int consumable = (total_frames / 8) * 8;
     if (consumable == 0) {
         // Not enough frames yet — cache everything
@@ -362,16 +372,15 @@ Tensor CausalConvSubsampling::forward_cached(const Tensor &input,
     // Cache leftover
     int leftover = total_frames - consumable;
     if (leftover > 0) {
-        cache = mel_input
-                    .slice({Slice(), Slice(consumable, total_frames), Slice()})
-                    .ascontiguousarray();
+        cache =
+            mel_input.slice({Slice(), Slice(consumable, total_frames), Slice()})
+                .ascontiguousarray();
     } else {
         cache = Tensor();
     }
 
     // Process consumable portion
-    auto to_process =
-        mel_input.slice({Slice(), Slice(0, consumable), Slice()});
+    auto to_process = mel_input.slice({Slice(), Slice(0, consumable), Slice()});
     return forward(to_process);
 }
 
@@ -379,7 +388,8 @@ Tensor CausalConvSubsampling::forward_cached(const Tensor &input,
 
 StreamingFastConformerEncoder::StreamingFastConformerEncoder(
     const StreamingEncoderConfig &config)
-    : config_(config), subsampling_(config.subsampling_channels) {
+    : config_(config),
+      subsampling_(config.subsampling_channels, config.subsampling_activation) {
     for (int i = 0; i < config.num_layers; ++i) {
         layers_.emplace_back<StreamingConformerBlock>(config);
     }
@@ -387,8 +397,14 @@ StreamingFastConformerEncoder::StreamingFastConformerEncoder(
 }
 
 Tensor StreamingFastConformerEncoder::forward(const Tensor &input,
-                                               const Tensor &mask) const {
+                                              const Tensor &mask) const {
     auto x = subsampling_(input);
+
+    // xscaling: multiply by sqrt(d_model) before conformer layers
+    if (config_.xscaling) {
+        float scale = std::sqrt(static_cast<float>(config_.hidden_size));
+        x = x * scale;
+    }
 
     int seq_len = static_cast<int>(x.shape()[1]);
     int d_model = static_cast<int>(x.shape()[2]);
@@ -405,14 +421,14 @@ Tensor StreamingFastConformerEncoder::forward(const Tensor &input,
 }
 
 void StreamingFastConformerEncoder::init_cache(EncoderCache &cache,
-                                                size_t batch_size) const {
+                                               size_t batch_size) const {
     cache.layer_caches.resize(config_.num_layers);
     cache.frames_seen = 0;
     // Individual layer caches start empty (no storage)
 }
 
 Tensor StreamingFastConformerEncoder::forward_chunk(const Tensor &input,
-                                                     EncoderCache &cache) const {
+                                                    EncoderCache &cache) const {
     if (cache.empty()) {
         init_cache(cache, input.shape()[0]);
     }
@@ -423,6 +439,12 @@ Tensor StreamingFastConformerEncoder::forward_chunk(const Tensor &input,
     // If subsampling returned empty (not enough frames), return empty
     if (!x.storage() || x.shape().size() == 0) {
         return Tensor();
+    }
+
+    // xscaling: multiply by sqrt(d_model) before conformer layers
+    if (config_.xscaling) {
+        float scale = std::sqrt(static_cast<float>(config_.hidden_size));
+        x = x * scale;
     }
 
     int chunk_len = static_cast<int>(x.shape()[1]);

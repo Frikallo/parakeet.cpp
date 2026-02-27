@@ -86,13 +86,10 @@ struct StreamingDecodeState {
 
 // Decode a single encoder chunk incrementally.
 // Returns new tokens emitted in this chunk.
-std::vector<int>
-rnnt_streaming_decode_chunk(RNNTPrediction &prediction, TDTJoint &joint,
-                            const Tensor &encoder_chunk,
-                            const std::vector<int> &durations,
-                            StreamingDecodeState &state,
-                            int blank_id = 1024,
-                            int max_symbols_per_step = 10);
+std::vector<int> rnnt_streaming_decode_chunk(
+    RNNTPrediction &prediction, TDTJoint &joint, const Tensor &encoder_chunk,
+    const std::vector<int> &durations, StreamingDecodeState &state,
+    int blank_id = 1024, int max_symbols_per_step = 10);
 
 // ─── Streaming Transcriber ───────────────────────────────────────────────────
 

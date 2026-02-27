@@ -5,7 +5,8 @@
 
 namespace parakeet {
 
-// ─── Timestamp Types ──────────────────────────────────────────────────────────
+// ─── Timestamp Types
+// ──────────────────────────────────────────────────────────
 
 struct TimestampedToken {
     int token_id;
@@ -22,7 +23,8 @@ struct WordTimestamp {
 // ─── Frame ↔ Time Conversion ─────────────────────────────────────────────────
 
 // Encoder frames → seconds.
-// Each encoder frame = subsampling_factor (8) * hop_length (160) / sample_rate (16000)
+// Each encoder frame = subsampling_factor (8) * hop_length (160) / sample_rate
+// (16000)
 //                    = 8 * 160 / 16000 = 0.08s
 constexpr float FRAME_DURATION_S = 0.08f;
 
@@ -30,7 +32,8 @@ inline float frame_to_seconds(int frame) {
     return static_cast<float>(frame) * FRAME_DURATION_S;
 }
 
-// ─── Word-Level Grouping ──────────────────────────────────────────────────────
+// ─── Word-Level Grouping
+// ──────────────────────────────────────────────────────
 
 enum class TimestampMode {
     Words,     // Group by SentencePiece ▁ boundary marker

@@ -42,7 +42,8 @@ struct SortformerConfig {
 
 inline SortformerConfig make_sortformer_117m_config() {
     SortformerConfig cfg;
-    // NEST encoder: 17-layer FastConformer
+    // NEST encoder: 17-layer FastConformer, 128 mel bins
+    cfg.nest_encoder.mel_bins = 128;
     cfg.nest_encoder.hidden_size = 512;
     cfg.nest_encoder.num_layers = 17;
     cfg.nest_encoder.num_heads = 8;
@@ -52,14 +53,18 @@ inline SortformerConfig make_sortformer_117m_config() {
     cfg.nest_encoder.att_context_left = 70;
     cfg.nest_encoder.att_context_right = 0;
     cfg.nest_encoder.chunk_size = 20;
+    cfg.nest_encoder.subsampling_activation = SubsamplingActivation::ReLU;
+    cfg.nest_encoder.xscaling = true; // NeMo default: multiply by sqrt(d_model)
     cfg.encoder_hidden = 512;
 
-    // Transformer decoder
+    // Transformer decoder (post-norm with final layer norm)
     cfg.transformer_hidden = 192;
     cfg.transformer.hidden_size = 192;
     cfg.transformer.num_layers = 18;
-    cfg.transformer.num_heads = 4;
+    cfg.transformer.num_heads = 8;
     cfg.transformer.ffn_intermediate = 768;
+    cfg.transformer.pre_ln = false; // NeMo sortformer uses post-norm
+    cfg.transformer.has_final_norm = false;
 
     cfg.max_speakers = 4;
     cfg.activity_threshold = 0.5f;
@@ -92,16 +97,16 @@ class AOSCCache {
 
 class Sortformer : public Module {
   public:
-    explicit Sortformer(const SortformerConfig &config =
-                            make_sortformer_117m_config());
+    explicit Sortformer(
+        const SortformerConfig &config = make_sortformer_117m_config());
 
     // Batch diarization: (1, n_frames, n_mels) → segments
     std::vector<DiarizationSegment> diarize(const Tensor &features) const;
 
     // Streaming: process a chunk, return segments so far
-    std::vector<DiarizationSegment>
-    diarize_chunk(const Tensor &features, EncoderCache &enc_cache,
-                  AOSCCache &aosc_cache) const;
+    std::vector<DiarizationSegment> diarize_chunk(const Tensor &features,
+                                                  EncoderCache &enc_cache,
+                                                  AOSCCache &aosc_cache) const;
 
     // Raw forward: features → (batch, T, max_speakers) sigmoid probs
     Tensor forward(const Tensor &features) const;
@@ -111,9 +116,12 @@ class Sortformer : public Module {
   private:
     SortformerConfig config_;
     StreamingFastConformerEncoder nest_encoder_;
-    Linear projection_;       // encoder_hidden → transformer_hidden
+    Linear projection_; // encoder_hidden → transformer_hidden
     TransformerEncoder transformer_;
-    Linear output_proj_;      // transformer_hidden → max_speakers
+    Linear output_proj_;    // transformer_hidden → max_speakers
+                            // (single_hidden_to_spks)
+    Linear first_hidden_;   // transformer_hidden → transformer_hidden
+    Linear hidden_to_spks_; // 2*transformer_hidden → max_speakers (concat path)
 
     // Post-process sigmoid probabilities to segments
     std::vector<DiarizationSegment>

@@ -14,8 +14,8 @@ static void print_usage(const char *prog) {
         << "Usage: " << prog << " <model.safetensors> <audio.wav> [options]\n"
         << "\nModel types:\n"
         << "  --model TYPE   Model type (default: tdt-ctc-110m)\n"
-        << "                 Types: tdt-ctc-110m, tdt-600m, eou-120m,\n"
-        << "                        nemotron-600m, sortformer\n"
+        << "                 Types: tdt-ctc-110m, tdt-600m, rnnt-600m,\n"
+        << "                        eou-120m, nemotron-600m, sortformer\n"
         << "\nDecoder options:\n"
         << "  --ctc          Use CTC decoder (default: TDT)\n"
         << "  --tdt          Use TDT decoder\n"
@@ -129,13 +129,14 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
 
     for (size_t b = 0; b < token_ids.size(); ++b) {
         const auto &tokens = token_ids[b];
-        std::cout << "\n--- Transcription (" << tokens.size()
-                  << " tokens) ---" << std::endl;
+        std::cout << "\n--- Transcription (" << tokens.size() << " tokens) ---"
+                  << std::endl;
         if (tokenizer.loaded()) {
             std::cout << tokenizer.decode(tokens) << std::endl;
         } else {
             for (size_t i = 0; i < tokens.size(); ++i) {
-                if (i > 0) std::cout << " ";
+                if (i > 0)
+                    std::cout << " ";
                 std::cout << tokens[i];
             }
             std::cout << std::endl;
@@ -184,7 +185,9 @@ static int run_tdt_600m(const std::string &weights_path,
     }
 
     auto wav = read_wav(audio_path);
-    auto features = preprocess_audio(wav.samples);
+    AudioConfig audio_cfg;
+    audio_cfg.n_mels = cfg.encoder.mel_bins;
+    auto features = preprocess_audio(wav.samples, audio_cfg);
     if (use_gpu)
         features = features.gpu();
 
@@ -199,15 +202,18 @@ static int run_tdt_600m(const std::string &weights_path,
     std::vector<std::vector<int>> token_ids;
     std::vector<std::vector<TimestampedToken>> timestamped_tokens;
 
+    int blank_id = cfg.prediction.vocab_size - 1;
+
     if (show_timestamps) {
-        timestamped_tokens =
-            tdt_greedy_decode_with_timestamps(model, encoder_out, cfg.durations);
+        timestamped_tokens = tdt_greedy_decode_with_timestamps(
+            model, encoder_out, cfg.durations, blank_id);
         token_ids.resize(timestamped_tokens.size());
         for (size_t b = 0; b < timestamped_tokens.size(); ++b)
             for (const auto &t : timestamped_tokens[b])
                 token_ids[b].push_back(t.token_id);
     } else {
-        token_ids = tdt_greedy_decode(model, encoder_out, cfg.durations);
+        token_ids =
+            tdt_greedy_decode(model, encoder_out, cfg.durations, blank_id);
     }
 
     for (size_t b = 0; b < token_ids.size(); ++b) {
@@ -226,6 +232,64 @@ static int run_tdt_600m(const std::string &weights_path,
                           << w.start << "s - " << w.end << "s] " << w.word
                           << std::endl;
             }
+        }
+    }
+    return 0;
+}
+
+// ─── RNNT 600M mode ─────────────────────────────────────────────────────────
+
+static int run_rnnt_600m(const std::string &weights_path,
+                         const std::string &audio_path,
+                         const std::string &vocab_path, bool use_gpu) {
+    using namespace parakeet;
+    using Clock = std::chrono::high_resolution_clock;
+
+    std::cout << "Loading model: rnnt-600m" << std::endl;
+    RNNTConfig cfg = make_rnnt_600m_config();
+    ParakeetRNNT model(cfg);
+
+    auto weights = axiom::io::safetensors::load(weights_path);
+    model.load_state_dict(weights, "", false);
+    std::cout << "Model loaded (" << weights.size() << " tensors)" << std::endl;
+
+    if (use_gpu) {
+        model.to(axiom::Device::GPU);
+        std::cout << "Model moved to GPU" << std::endl;
+    }
+
+    Tokenizer tokenizer;
+    if (!vocab_path.empty()) {
+        tokenizer.load(vocab_path);
+    }
+
+    auto wav = read_wav(audio_path);
+    auto features = preprocess_audio(wav.samples);
+    if (use_gpu)
+        features = features.gpu();
+
+    auto t0 = Clock::now();
+    auto encoder_out = model.encoder()(features);
+    auto t1 = Clock::now();
+    std::cout << "Encoder: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
+                     .count()
+              << " ms" << std::endl;
+
+    int blank_id = cfg.prediction.vocab_size - 1;
+    t0 = Clock::now();
+    auto token_ids = rnnt_greedy_decode(model, encoder_out, blank_id);
+    t1 = Clock::now();
+    std::cout << "Decoder: RNNT ("
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
+                     .count()
+              << " ms)" << std::endl;
+
+    for (size_t b = 0; b < token_ids.size(); ++b) {
+        std::cout << "\n--- Transcription (" << token_ids[b].size()
+                  << " tokens) ---" << std::endl;
+        if (tokenizer.loaded()) {
+            std::cout << tokenizer.decode(token_ids[b]) << std::endl;
         }
     }
     return 0;
@@ -259,8 +323,8 @@ static int run_eou_streaming(const std::string &weights_path,
     auto t0 = Clock::now();
     for (int offset = 0; offset < total; offset += CHUNK_SAMPLES) {
         int chunk_len = std::min(CHUNK_SAMPLES, total - offset);
-        auto chunk = axiom::Tensor::from_data(data + offset,
-                                               axiom::Shape{static_cast<size_t>(chunk_len)}, true);
+        auto chunk = axiom::Tensor::from_data(
+            data + offset, axiom::Shape{static_cast<size_t>(chunk_len)}, true);
         auto text = transcriber.transcribe_chunk(chunk);
         if (!text.empty()) {
             std::cout << text << std::flush;
@@ -289,8 +353,8 @@ static int run_nemotron_streaming(const std::string &weights_path,
 
     std::cout << "Loading model: nemotron-600m (streaming, latency="
               << latency_frames << " frames)" << std::endl;
-    NemotronTranscriber transcriber(
-        weights_path, vocab_path, make_nemotron_600m_config(latency_frames));
+    NemotronTranscriber transcriber(weights_path, vocab_path,
+                                    make_nemotron_600m_config(latency_frames));
     if (use_gpu)
         transcriber.to_gpu();
 
@@ -304,8 +368,8 @@ static int run_nemotron_streaming(const std::string &weights_path,
     auto t0 = Clock::now();
     for (int offset = 0; offset < total; offset += CHUNK_SAMPLES) {
         int chunk_len = std::min(CHUNK_SAMPLES, total - offset);
-        auto chunk = axiom::Tensor::from_data(data + offset,
-                                               axiom::Shape{static_cast<size_t>(chunk_len)}, true);
+        auto chunk = axiom::Tensor::from_data(
+            data + offset, axiom::Shape{static_cast<size_t>(chunk_len)}, true);
         auto text = transcriber.transcribe_chunk(chunk);
         if (!text.empty()) {
             std::cout << text << std::flush;
@@ -341,7 +405,10 @@ static int run_sortformer(const std::string &weights_path,
     }
 
     auto wav = read_wav(audio_path);
-    auto features = preprocess_audio(wav.samples);
+    AudioConfig audio_cfg;
+    audio_cfg.n_mels = cfg.nest_encoder.mel_bins;
+    audio_cfg.normalize = false; // sortformer uses normalize: NA
+    auto features = preprocess_audio(wav.samples, audio_cfg);
     if (use_gpu)
         features = features.gpu();
 
@@ -423,6 +490,8 @@ int main(int argc, char *argv[]) {
         } else if (model_type == "tdt-600m") {
             return run_tdt_600m(weights_path, audio_path, vocab_path, use_gpu,
                                 show_timestamps);
+        } else if (model_type == "rnnt-600m") {
+            return run_rnnt_600m(weights_path, audio_path, vocab_path, use_gpu);
         } else if (model_type == "eou-120m") {
             return run_eou_streaming(weights_path, audio_path, vocab_path,
                                      use_gpu);

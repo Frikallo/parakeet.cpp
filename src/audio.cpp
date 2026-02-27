@@ -123,8 +123,9 @@ Tensor preprocess_audio(const Tensor &waveform, const AudioConfig &config) {
 
     // 4. Apply mel filterbank (slaney scale + slaney normalization)
     float f_max = config.f_max > 0 ? config.f_max : config.sample_rate / 2.0f;
-    auto mel_fb = detail::build_mel_filterbank(config.n_fft / 2 + 1, config.n_mels,
-                                       config.sample_rate, config.f_min, f_max);
+    auto mel_fb =
+        detail::build_mel_filterbank(config.n_fft / 2 + 1, config.n_mels,
+                                     config.sample_rate, config.f_min, f_max);
     // mel_spec: (n_mels, n_frames) = mel_fb^T @ power
     auto mel_spec = ops::matmul(mel_fb.transpose(), power);
 
@@ -133,25 +134,31 @@ Tensor preprocess_audio(const Tensor &waveform, const AudioConfig &config) {
     auto log_mel = ops::log(mel_spec + LOG_GUARD);
 
     // 6. Per-feature normalization (per mel bin, over time dimension)
-    // NeMo uses unbiased variance (N-1 denominator)
-    // log_mel: (n_mels, n_frames)
-    auto mean = ops::mean(log_mel, {1}).unsqueeze(1); // (n_mels, 1)
-    auto centered = log_mel - mean;
-    int n_frames = static_cast<int>(log_mel.shape()[1]);
-    // Unbiased variance: sum((x-mean)^2) / (N-1)
-    auto var_sum = ops::sum(centered * centered, {1}).unsqueeze(1);
-    auto var = var_sum / static_cast<float>(n_frames - 1);
-    auto norm = centered / (ops::sqrt(var) + 1e-5f);
+    axiom::Tensor features;
+    if (config.normalize) {
+        // NeMo uses unbiased variance (N-1 denominator)
+        // log_mel: (n_mels, n_frames)
+        auto mean = ops::mean(log_mel, {1}).unsqueeze(1); // (n_mels, 1)
+        auto centered = log_mel - mean;
+        int n_frames = static_cast<int>(log_mel.shape()[1]);
+        // Unbiased variance: sum((x-mean)^2) / (N-1)
+        auto var_sum = ops::sum(centered * centered, {1}).unsqueeze(1);
+        auto var = var_sum / static_cast<float>(n_frames - 1);
+        features = centered / (ops::sqrt(var) + 1e-5f);
+    } else {
+        features = log_mel;
+    }
 
     // 7. Transpose and add batch dim: (n_mels, n_frames) -> (1, n_frames,
     // n_mels)
-    auto result = norm.transpose().unsqueeze(0);
+    auto result = features.transpose().unsqueeze(0);
     return result;
 }
 
 // ─── Streaming Audio Preprocessor ────────────────────────────────────────────
 
-StreamingAudioPreprocessor::StreamingAudioPreprocessor(const AudioConfig &config)
+StreamingAudioPreprocessor::StreamingAudioPreprocessor(
+    const AudioConfig &config)
     : config_(config) {
     mel_sum_.resize(config.n_mels, 0.0);
     mel_sq_sum_.resize(config.n_mels, 0.0);
@@ -160,8 +167,9 @@ StreamingAudioPreprocessor::StreamingAudioPreprocessor(const AudioConfig &config
 void StreamingAudioPreprocessor::build_mel_filterbank() {
     float f_max =
         config_.f_max > 0 ? config_.f_max : config_.sample_rate / 2.0f;
-    mel_fb_ = detail::build_mel_filterbank(config_.n_fft / 2 + 1, config_.n_mels,
-                                            config_.sample_rate, config_.f_min, f_max);
+    mel_fb_ =
+        detail::build_mel_filterbank(config_.n_fft / 2 + 1, config_.n_mels,
+                                     config_.sample_rate, config_.f_min, f_max);
     mel_fb_built_ = true;
 }
 
@@ -215,9 +223,8 @@ Tensor StreamingAudioPreprocessor::process_chunk(const Tensor &samples) {
     overlap_buffer_.assign(audio_buf.begin() + consumed, audio_buf.end());
 
     // 3. STFT on the consumable portion
-    auto audio_tensor = Tensor::from_data(audio_buf.data(),
-                                           Shape{static_cast<size_t>(consumed)},
-                                           true);
+    auto audio_tensor = Tensor::from_data(
+        audio_buf.data(), Shape{static_cast<size_t>(consumed)}, true);
     auto window = fft::hann_window(config_.win_length, /*periodic=*/false);
     auto stft_out = fft::stft(audio_tensor, config_.n_fft, config_.hop_length,
                               config_.win_length, window, /*center=*/false,

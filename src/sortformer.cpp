@@ -41,8 +41,10 @@ void AOSCCache::reset() {
 
 Sortformer::Sortformer(const SortformerConfig &config)
     : config_(config), nest_encoder_(config.nest_encoder), projection_(true),
-      transformer_(config.transformer), output_proj_(true) {
-    AX_REGISTER_MODULES(nest_encoder_, projection_, transformer_, output_proj_);
+      transformer_(config.transformer), output_proj_(true), first_hidden_(true),
+      hidden_to_spks_(true) {
+    AX_REGISTER_MODULES(nest_encoder_, projection_, transformer_, output_proj_,
+                        first_hidden_, hidden_to_spks_);
 }
 
 Tensor Sortformer::forward(const Tensor &features) const {
@@ -55,10 +57,13 @@ Tensor Sortformer::forward(const Tensor &features) const {
     // 3. Transformer encoder
     auto trans_out = transformer_(proj);
 
-    // 4. Output projection → (batch, T, max_speakers)
-    auto logits = output_proj_(trans_out);
+    // 4. Speaker head: forward_speaker_sigmoids
+    //    ReLU → first_hidden_to_hidden → ReLU → single_hidden_to_spks → sigmoid
+    auto h = ops::relu(trans_out);
+    h = first_hidden_(h);
+    h = ops::relu(h);
+    auto logits = output_proj_(h); // (batch, T, max_speakers)
 
-    // 5. Sigmoid activation (multi-label: each speaker independently)
     return ops::sigmoid(logits);
 }
 
@@ -128,14 +133,19 @@ Sortformer::diarize_chunk(const Tensor &features, EncoderCache &enc_cache,
     // 2. Project + transform
     auto proj = projection_(enc_out);
     auto trans_out = transformer_(proj);
-    auto logits = output_proj_(trans_out);
+
+    // 3. Speaker head (same as forward)
+    auto h = ops::relu(trans_out);
+    h = first_hidden_(h);
+    h = ops::relu(h);
+    auto logits = output_proj_(h);
     auto probs = ops::sigmoid(logits);
 
-    // 3. Update AOSC
+    // 4. Update AOSC
     auto p = probs.squeeze(0);
     aosc_cache.update(p);
 
-    // 4. Convert to segments
+    // 5. Convert to segments
     return probs_to_segments(p);
 }
 

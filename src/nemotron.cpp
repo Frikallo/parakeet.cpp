@@ -5,8 +5,7 @@ namespace parakeet {
 // ─── ParakeetNemotron ────────────────────────────────────────────────────────
 
 ParakeetNemotron::ParakeetNemotron(const NemotronConfig &config)
-    : config_(config), encoder_(config.encoder),
-      prediction_(config.prediction),
+    : config_(config), encoder_(config.encoder), prediction_(config.prediction),
       joint_(config.joint, static_cast<int>(config.durations.size())) {
     AX_REGISTER_MODULES(encoder_, prediction_, joint_);
 }

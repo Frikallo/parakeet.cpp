@@ -71,7 +71,9 @@ class Transcriber {
     TranscribeResult transcribe(const axiom::Tensor &samples,
                                 Decoder decoder = Decoder::TDT,
                                 bool timestamps = false) {
-        auto features = preprocess_audio(samples);
+        AudioConfig audio_cfg;
+        audio_cfg.n_mels = config_.encoder.mel_bins;
+        auto features = preprocess_audio(samples, audio_cfg);
         if (use_gpu_) {
             features = features.gpu();
         }
@@ -113,8 +115,8 @@ class Transcriber {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
                 all_tokens = ctc_greedy_decode(log_probs.cpu());
             } else {
-                all_tokens = tdt_greedy_decode(model_, encoder_out,
-                                               config_.durations);
+                all_tokens =
+                    tdt_greedy_decode(model_, encoder_out, config_.durations);
             }
 
             if (!all_tokens.empty()) {
@@ -171,7 +173,9 @@ class TDTTranscriber {
 
     TranscribeResult transcribe(const axiom::Tensor &samples,
                                 bool timestamps = false) {
-        auto features = preprocess_audio(samples);
+        AudioConfig audio_cfg;
+        audio_cfg.n_mels = config_.encoder.mel_bins;
+        auto features = preprocess_audio(samples, audio_cfg);
         if (use_gpu_) {
             features = features.gpu();
         }
@@ -181,8 +185,8 @@ class TDTTranscriber {
         TranscribeResult result;
 
         if (timestamps) {
-            auto all_ts = tdt_greedy_decode_with_timestamps(
-                model_, encoder_out, config_.durations);
+            auto all_ts = tdt_greedy_decode_with_timestamps(model_, encoder_out,
+                                                            config_.durations);
             if (!all_ts.empty()) {
                 result.timestamped_tokens = all_ts[0];
                 for (const auto &t : result.timestamped_tokens) {

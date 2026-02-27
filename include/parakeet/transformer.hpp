@@ -13,10 +13,12 @@ using namespace axiom::nn;
 struct TransformerConfig {
     int hidden_size = 192;
     int num_layers = 18;
-    int num_heads = 4;
+    int num_heads = 8;
     int ffn_intermediate = 768;
     float dropout = 0.1f;
     float layer_norm_eps = 1e-5f;
+    bool pre_ln = true; // true=pre-norm, false=post-norm
+    bool has_final_norm = false;
 };
 
 // ─── Standard Transformer Block ──────────────────────────────────────────────
@@ -28,8 +30,7 @@ class TransformerBlock : public Module {
     explicit TransformerBlock(const TransformerConfig &config = {});
 
     // input: (batch, seq, hidden)
-    Tensor forward(const Tensor &input,
-                   const Tensor &mask = Tensor()) const;
+    Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
     Tensor operator()(const Tensor &input,
                       const Tensor &mask = Tensor()) const {
         return forward(input, mask);
@@ -43,6 +44,7 @@ class TransformerBlock : public Module {
     Linear fc1_;
     Linear fc2_;
     Dropout dropout2_;
+    bool pre_ln_ = true;
 };
 
 // ─── Transformer Encoder ─────────────────────────────────────────────────────
@@ -51,8 +53,7 @@ class TransformerEncoder : public Module {
   public:
     explicit TransformerEncoder(const TransformerConfig &config = {});
 
-    Tensor forward(const Tensor &input,
-                   const Tensor &mask = Tensor()) const;
+    Tensor forward(const Tensor &input, const Tensor &mask = Tensor()) const;
     Tensor operator()(const Tensor &input,
                       const Tensor &mask = Tensor()) const {
         return forward(input, mask);
@@ -61,6 +62,7 @@ class TransformerEncoder : public Module {
   private:
     ModuleList layers_;
     LayerNorm final_norm_;
+    bool has_final_norm_ = false;
 };
 
 } // namespace parakeet

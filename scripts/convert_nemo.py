@@ -47,6 +47,15 @@ MODEL_PRESETS = {
         "has_ctc": False,
         "joint_prefix": "joint_",
     },
+    "rnnt-600m": {
+        "num_layers": 24,
+        "vocab_size": 1025,
+        "num_durations": 0,
+        "num_lstm_layers": 2,
+        "has_ctc": False,
+        "joint_prefix": "joint_",
+        "is_rnnt": True,  # joint output = vocab only (no duration split)
+    },
     "eou-120m": {
         "num_layers": 17,
         "vocab_size": 1025,
@@ -65,12 +74,14 @@ MODEL_PRESETS = {
     },
     "sortformer": {
         "num_layers": 17,
+        "num_transformer_layers": 18,
         "vocab_size": 0,
         "num_durations": 0,
         "num_lstm_layers": 0,
         "has_ctc": False,
         "has_decoder": False,
         "joint_prefix": "",
+        "encoder_prefix": "nest_encoder_",
     },
 }
 
@@ -84,7 +95,7 @@ NUM_DURATIONS = 5
 
 # ─── NeMo → Axiom name mapping ──────────────────────────────────────────────
 
-def build_subsampling_map():
+def build_subsampling_map(axiom_prefix="encoder_"):
     """Map NeMo subsampling conv indices to axiom names.
 
     NeMo Sequential:
@@ -110,20 +121,20 @@ def build_subsampling_map():
     for nemo_idx, axiom_name in nemo_to_axiom.items():
         for param in ("weight", "bias"):
             nemo_key = f"encoder.pre_encode.conv.{nemo_idx}.{param}"
-            axiom_key = f"encoder_.subsampling_.{axiom_name}.{param}"
+            axiom_key = f"{axiom_prefix}.subsampling_.{axiom_name}.{param}"
             m[nemo_key] = axiom_key
 
     # Linear projection
     for param in ("weight", "bias"):
-        m[f"encoder.pre_encode.out.{param}"] = f"encoder_.subsampling_.proj_.{param}"
+        m[f"encoder.pre_encode.out.{param}"] = f"{axiom_prefix}.subsampling_.proj_.{param}"
 
     return m
 
 
-def build_conformer_layer_map(layer_idx):
+def build_conformer_layer_map(layer_idx, axiom_prefix="encoder_"):
     """Map NeMo conformer layer keys to axiom keys for layer `layer_idx`."""
     n = f"encoder.layers.{layer_idx}"
-    a = f"encoder_.layers_.{layer_idx}"
+    a = f"{axiom_prefix}.layers_.{layer_idx}"
     m = {}
 
     # FFN1 (macaron half-step)
@@ -204,8 +215,8 @@ def build_joint_map(joint_prefix="tdt_joint_"):
     m = {}
 
     for param in ("weight", "bias"):
-        m[f"joint.enc.{param}"] = f"{joint_prefix}enc_proj_.{param}"
-        m[f"joint.pred.{param}"] = f"{joint_prefix}pred_proj_.{param}"
+        m[f"joint.enc.{param}"] = f"{joint_prefix}.enc_proj_.{param}"
+        m[f"joint.pred.{param}"] = f"{joint_prefix}.pred_proj_.{param}"
 
     # joint.joint_net.2 is combined [vocab_size + num_durations]
     # Handled specially in convert() — split into label_proj_ and duration_proj_
@@ -227,15 +238,59 @@ def build_ctc_map():
     return m
 
 
+def build_transformer_encoder_map(num_layers):
+    """Map NeMo transformer encoder layers to axiom TransformerEncoder keys.
+
+    NeMo structure per layer:
+      transformer_encoder.layers.N.first_sub_layer  = MHA (query_net, key_net, value_net, out_projection)
+      transformer_encoder.layers.N.layer_norm_1     = pre-MHA norm
+      transformer_encoder.layers.N.layer_norm_2     = pre-FFN norm
+      transformer_encoder.layers.N.second_sub_layer = FFN (dense_in, dense_out)
+    """
+    m = {}
+    for i in range(num_layers):
+        n = f"transformer_encoder.layers.{i}"
+        a = f"transformer_.layers_.{i}"
+
+        for param in ("weight", "bias"):
+            # Layer norms
+            m[f"{n}.layer_norm_1.{param}"] = f"{a}.norm1_.{param}"
+            m[f"{n}.layer_norm_2.{param}"] = f"{a}.norm2_.{param}"
+
+            # MHA projections
+            m[f"{n}.first_sub_layer.query_net.{param}"] = f"{a}.mha_.q_proj.{param}"
+            m[f"{n}.first_sub_layer.key_net.{param}"] = f"{a}.mha_.k_proj.{param}"
+            m[f"{n}.first_sub_layer.value_net.{param}"] = f"{a}.mha_.v_proj.{param}"
+            m[f"{n}.first_sub_layer.out_projection.{param}"] = f"{a}.mha_.out_proj.{param}"
+
+            # FFN
+            m[f"{n}.second_sub_layer.dense_in.{param}"] = f"{a}.fc1_.{param}"
+            m[f"{n}.second_sub_layer.dense_out.{param}"] = f"{a}.fc2_.{param}"
+
+    return m
+
+
+def build_sortformer_modules_map():
+    """Map NeMo sortformer_modules to axiom Sortformer keys."""
+    m = {}
+    for param in ("weight", "bias"):
+        m[f"sortformer_modules.encoder_proj.{param}"] = f"projection_.{param}"
+        m[f"sortformer_modules.single_hidden_to_spks.{param}"] = f"output_proj_.{param}"
+        m[f"sortformer_modules.first_hidden_to_hidden.{param}"] = f"first_hidden_.{param}"
+        m[f"sortformer_modules.hidden_to_spks.{param}"] = f"hidden_to_spks_.{param}"
+    return m
+
+
 def build_full_mapping(preset=None):
     """Build the complete NeMo → axiom mapping."""
     if preset is None:
         preset = MODEL_PRESETS[DEFAULT_MODEL]
 
     m = {}
-    m.update(build_subsampling_map())
+    encoder_prefix = preset.get("encoder_prefix", "encoder_")
+    m.update(build_subsampling_map(encoder_prefix))
     for i in range(preset["num_layers"]):
-        m.update(build_conformer_layer_map(i))
+        m.update(build_conformer_layer_map(i, encoder_prefix))
 
     # Models without decoder (e.g., sortformer) skip prediction/joint mapping
     has_decoder = preset.get("has_decoder", True)
@@ -245,6 +300,13 @@ def build_full_mapping(preset=None):
         m.update(build_joint_map(preset["joint_prefix"]))
     if preset.get("has_ctc", False):
         m.update(build_ctc_map())
+
+    # Sortformer-specific mappings
+    num_transformer_layers = preset.get("num_transformer_layers", 0)
+    if num_transformer_layers > 0:
+        m.update(build_transformer_encoder_map(num_transformer_layers))
+        m.update(build_sortformer_modules_map())
+
     return m
 
 
@@ -354,22 +416,34 @@ def convert(ckpt_path, output_path, model_type=DEFAULT_MODEL):
             mapped_nemo_keys.add(f"decoder.prediction.dec_rnn.lstm.bias_hh_l{l}")
             print(f"  Merged LSTM layer {l} biases: {list(bias_ih.shape)} → {list(merged_bias.shape)}")
 
-    # ── Special handling: split combined joint output ──
+    # ── Special handling: joint output ──
+    is_rnnt = preset.get("is_rnnt", False)
     joint_w = state_dict.get("joint.joint_net.2.weight")
     joint_b = state_dict.get("joint.joint_net.2.bias")
     if joint_w is not None:
-        output[f"{joint_prefix}label_proj_.weight"] = joint_w[:vocab_size]
-        output[f"{joint_prefix}duration_proj_.weight"] = joint_w[vocab_size:]
-        mapped_nemo_keys.add("joint.joint_net.2.weight")
-        print(f"  Split joint weight: {list(joint_w.shape)} → "
-              f"label {list(joint_w[:vocab_size].shape)} + "
-              f"duration {list(joint_w[vocab_size:].shape)}")
+        if is_rnnt:
+            # RNNT: joint output is just vocab (no duration split)
+            output[f"{joint_prefix}.out_proj_.weight"] = joint_w
+            mapped_nemo_keys.add("joint.joint_net.2.weight")
+            print(f"  RNNT joint weight: {list(joint_w.shape)} → out_proj_")
+        else:
+            output[f"{joint_prefix}.label_proj_.weight"] = joint_w[:vocab_size]
+            output[f"{joint_prefix}.duration_proj_.weight"] = joint_w[vocab_size:]
+            mapped_nemo_keys.add("joint.joint_net.2.weight")
+            print(f"  Split joint weight: {list(joint_w.shape)} → "
+                  f"label {list(joint_w[:vocab_size].shape)} + "
+                  f"duration {list(joint_w[vocab_size:].shape)}")
     if joint_b is not None:
-        output[f"{joint_prefix}label_proj_.bias"] = joint_b[:vocab_size]
-        output[f"{joint_prefix}duration_proj_.bias"] = joint_b[vocab_size:]
-        mapped_nemo_keys.add("joint.joint_net.2.bias")
-        print(f"  Split joint bias: {list(joint_b.shape)} → "
-              f"label [{vocab_size}] + duration [{num_durations}]")
+        if is_rnnt:
+            output[f"{joint_prefix}.out_proj_.bias"] = joint_b
+            mapped_nemo_keys.add("joint.joint_net.2.bias")
+            print(f"  RNNT joint bias: {list(joint_b.shape)} → out_proj_")
+        else:
+            output[f"{joint_prefix}.label_proj_.bias"] = joint_b[:vocab_size]
+            output[f"{joint_prefix}.duration_proj_.bias"] = joint_b[vocab_size:]
+            mapped_nemo_keys.add("joint.joint_net.2.bias")
+            print(f"  Split joint bias: {list(joint_b.shape)} → "
+                  f"label [{vocab_size}] + duration [{num_durations}]")
 
     # ── Map remaining keys ──
     for nemo_key, tensor in state_dict.items():

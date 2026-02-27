@@ -57,7 +57,6 @@ std::vector<std::vector<int>> ctc_greedy_decode(const Tensor &log_probs,
 
 // Same as above, but records frame indices for each emitted token.
 std::vector<std::vector<TimestampedToken>>
-ctc_greedy_decode_with_timestamps(const Tensor &log_probs,
-                                  int blank_id = 1024);
+ctc_greedy_decode_with_timestamps(const Tensor &log_probs, int blank_id = 1024);
 
 } // namespace parakeet

@@ -77,10 +77,9 @@ class ParakeetNemotron : public Module {
 
 class NemotronTranscriber {
   public:
-    NemotronTranscriber(const std::string &weights_path,
-                        const std::string &vocab_path,
-                        const NemotronConfig &config =
-                            make_nemotron_600m_config());
+    NemotronTranscriber(
+        const std::string &weights_path, const std::string &vocab_path,
+        const NemotronConfig &config = make_nemotron_600m_config());
 
     void to_gpu() {
         model_.to(axiom::Device::GPU);

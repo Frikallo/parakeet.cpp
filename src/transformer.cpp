@@ -7,20 +7,19 @@ namespace parakeet {
 // ─── TransformerBlock ────────────────────────────────────────────────────────
 
 TransformerBlock::TransformerBlock(const TransformerConfig &config)
-    : mha_(config.num_heads), dropout1_(config.dropout), fc1_(true),
-      fc2_(true), dropout2_(config.dropout) {
+    : mha_(config.num_heads), dropout1_(config.dropout), fc1_(true), fc2_(true),
+      dropout2_(config.dropout), pre_ln_(config.pre_ln) {
     AX_REGISTER_MODULES(norm1_, mha_, dropout1_, norm2_, fc1_, fc2_, dropout2_);
 }
 
 Tensor TransformerBlock::forward(const Tensor &input,
-                                  const Tensor &mask) const {
-    // Self-attention with pre-norm
-    auto x = norm1_(input);
+                                 const Tensor &mask) const {
+    // Standard MHA
+    auto mha_input = pre_ln_ ? norm1_(input) : input;
 
-    // Standard MHA (no relative position encoding)
-    auto q = mha_.q_proj()(x);
-    auto k = mha_.k_proj()(x);
-    auto v = mha_.v_proj()(x);
+    auto q = mha_.q_proj()(mha_input);
+    auto k = mha_.k_proj()(mha_input);
+    auto v = mha_.v_proj()(mha_input);
 
     int num_heads = mha_.num_heads();
     auto d_model = static_cast<int>(q.shape().back());
@@ -49,35 +48,43 @@ Tensor TransformerBlock::forward(const Tensor &input,
     out = out.reshape({batch, seq_len, static_cast<size_t>(d_model)});
     out = mha_.out_proj()(out);
     out = dropout1_(out);
-    x = input + out;
+    auto x = pre_ln_ ? (input + out) : norm1_(input + out);
 
-    // FFN with pre-norm
-    auto ffn_in = norm2_(x);
+    // FFN
+    auto ffn_in = pre_ln_ ? norm2_(x) : x;
     auto ffn_out = fc1_(ffn_in);
     ffn_out = ops::relu(ffn_out);
     ffn_out = dropout2_(ffn_out);
     ffn_out = fc2_(ffn_out);
     ffn_out = dropout2_(ffn_out);
 
-    return x + ffn_out;
+    return pre_ln_ ? (x + ffn_out) : norm2_(x + ffn_out);
 }
 
 // ─── TransformerEncoder ──────────────────────────────────────────────────────
 
-TransformerEncoder::TransformerEncoder(const TransformerConfig &config) {
+TransformerEncoder::TransformerEncoder(const TransformerConfig &config)
+    : has_final_norm_(config.has_final_norm) {
     for (int i = 0; i < config.num_layers; ++i) {
         layers_.emplace_back<TransformerBlock>(config);
     }
-    AX_REGISTER_MODULES(layers_, final_norm_);
+    if (has_final_norm_) {
+        AX_REGISTER_MODULES(layers_, final_norm_);
+    } else {
+        AX_REGISTER_MODULES(layers_);
+    }
 }
 
 Tensor TransformerEncoder::forward(const Tensor &input,
-                                    const Tensor &mask) const {
+                                   const Tensor &mask) const {
     auto x = input;
     for (const auto &block : layers_.each<TransformerBlock>()) {
         x = block(x, mask);
     }
-    return final_norm_(x);
+    if (has_final_norm_) {
+        return final_norm_(x);
+    }
+    return x;
 }
 
 } // namespace parakeet

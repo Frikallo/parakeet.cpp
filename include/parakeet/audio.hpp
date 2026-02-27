@@ -12,7 +12,8 @@ struct AudioConfig {
     int n_mels = 80;
     float dither = 1e-5f;
     float f_min = 0.0f;
-    float f_max = -1.0f; // defaults to sample_rate / 2
+    float f_max = -1.0f;   // defaults to sample_rate / 2
+    bool normalize = true; // per-feature normalization (false = "NA" in NeMo)
 };
 
 // NeMo-compatible audio preprocessing:
@@ -25,9 +26,10 @@ axiom::Tensor preprocess_audio(const axiom::Tensor &waveform,
 
 // ─── Streaming Audio Preprocessor ────────────────────────────────────────────
 
-// Maintains preemphasis state and STFT overlap buffer for chunk-wise processing.
-// Output is NOT per-feature normalized (streaming doesn't have full-sequence
-// stats). The encoder should handle unnormalized input or use running stats.
+// Maintains preemphasis state and STFT overlap buffer for chunk-wise
+// processing. Output is NOT per-feature normalized (streaming doesn't have
+// full-sequence stats). The encoder should handle unnormalized input or use
+// running stats.
 
 class StreamingAudioPreprocessor {
   public:
@@ -43,8 +45,9 @@ class StreamingAudioPreprocessor {
   private:
     AudioConfig config_;
     float preemph_last_sample_ = 0.0f; // state for preemphasis
-    std::vector<float> overlap_buffer_;  // STFT overlap (win_length - hop_length samples)
-    axiom::Tensor mel_fb_;               // cached mel filterbank
+    std::vector<float>
+        overlap_buffer_;   // STFT overlap (win_length - hop_length samples)
+    axiom::Tensor mel_fb_; // cached mel filterbank
     bool mel_fb_built_ = false;
 
     // Running statistics for normalization

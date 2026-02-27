@@ -11,7 +11,7 @@ else
     BUILD_CMD    := $(MAKE) -C $(BUILD_DIR) -j$(NPROC)
 endif
 
-.PHONY: all configure build run debug format format-check clean
+.PHONY: all configure build run test debug format format-check clean
 
 all: build
 
@@ -27,6 +27,9 @@ debug: configure
 
 run: build
 	./$(BUILD_DIR)/parakeet
+
+test: build
+	./$(BUILD_DIR)/parakeet_tests
 
 format:
 	find src include -name '*.cpp' -o -name '*.hpp' | xargs clang-format -i

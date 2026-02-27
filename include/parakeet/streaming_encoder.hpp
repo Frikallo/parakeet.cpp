@@ -13,17 +13,22 @@ using namespace axiom::nn;
 
 // ─── Streaming Encoder Config ────────────────────────────────────────────────
 
+enum class SubsamplingActivation { SiLU, ReLU };
+
 struct StreamingEncoderConfig : EncoderConfig {
-    int att_context_left = 70;  // left context frames for attention
-    int att_context_right = 0;  // right context frames (0 = causal)
-    int chunk_size = 20;        // frames per chunk after subsampling
+    int att_context_left = 70; // left context frames for attention
+    int att_context_right = 0; // right context frames (0 = causal)
+    int chunk_size = 20;       // frames per chunk after subsampling
+    SubsamplingActivation subsampling_activation = SubsamplingActivation::SiLU;
+    bool xscaling = false; // multiply subsampling output by sqrt(d_model)
 };
 
 // ─── Block Cache (per-layer state) ──────────────────────────────────────────
 
 struct BlockCache {
-    Tensor conv_cache;  // (batch, hidden, kernel_size-1) left-padding for causal conv
-    Tensor key_cache;   // (batch, heads, cache_len, head_dim)
+    Tensor conv_cache; // (batch, hidden, kernel_size-1) left-padding for causal
+                       // conv
+    Tensor key_cache;  // (batch, heads, cache_len, head_dim)
     Tensor value_cache; // (batch, heads, cache_len, head_dim)
 };
 
@@ -47,7 +52,8 @@ class CausalConformerConvModule : public Module {
     explicit CausalConformerConvModule(int groups = 1, int kernel_size = 9,
                                        float dropout = 0.1f);
 
-    // Non-streaming: full-sequence forward (same as regular ConformerConvModule)
+    // Non-streaming: full-sequence forward (same as regular
+    // ConformerConvModule)
     Tensor forward(const Tensor &input) const;
 
     // Streaming: forward with cache
@@ -135,11 +141,14 @@ class StreamingConformerBlock : public Module {
 
 // ─── Causal Conv Subsampling ─────────────────────────────────────────────────
 
-// Same architecture as ConvSubsampling but can process chunks with overlap cache.
+// Same architecture as ConvSubsampling but can process chunks with overlap
+// cache.
 
 class CausalConvSubsampling : public Module {
   public:
-    explicit CausalConvSubsampling(int channels = 256);
+    explicit CausalConvSubsampling(
+        int channels = 256,
+        SubsamplingActivation act = SubsamplingActivation::SiLU);
 
     // Non-streaming: full-sequence (identical to ConvSubsampling)
     Tensor forward(const Tensor &input) const;
@@ -154,6 +163,7 @@ class CausalConvSubsampling : public Module {
     Conv2d dw1_, dw2_;
     Conv2d conv2_, conv3_;
     Linear proj_;
+    SubsamplingActivation activation_;
 };
 
 // ─── Streaming FastConformer Encoder ─────────────────────────────────────────

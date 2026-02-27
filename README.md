@@ -6,6 +6,18 @@ Built on [axiom](https://github.com/noahkay13/axiom) — a lightweight tensor li
 
 **~13ms encoder inference on Apple Silicon GPU** — 2.5x faster than PyTorch MPS (32ms).
 
+## Supported Models
+
+| Model | Class | Size | Type | Description |
+|-------|-------|------|------|-------------|
+| `tdt-ctc-110m` | `ParakeetTDTCTC` | 110M | Offline | English, dual CTC/TDT decoder heads |
+| `tdt-600m` | `ParakeetTDT` | 600M | Offline | Multilingual, TDT decoder |
+| `eou-120m` | `ParakeetEOU` | 120M | Streaming | English, RNNT with end-of-utterance detection |
+| `nemotron-600m` | `ParakeetNemotron` | 600M | Streaming | Multilingual, configurable latency (80ms–1120ms) |
+| `sortformer` | `Sortformer` | 117M | Streaming | Speaker diarization (up to 4 speakers) |
+
+All ASR models share the same audio pipeline: 16kHz mono WAV → 80-bin Mel spectrogram → FastConformer encoder.
+
 ## Quick Start
 
 ```cpp
@@ -24,10 +36,97 @@ auto result = t.transcribe("audio.wav", parakeet::Decoder::CTC);  // fast greedy
 auto result = t.transcribe("audio.wav", parakeet::Decoder::TDT);  // better accuracy (default)
 ```
 
-Transcribe from raw samples:
+Word-level timestamps:
 ```cpp
-auto wav = parakeet::read_wav("audio.wav");
-auto result = t.transcribe(wav.samples);
+auto result = t.transcribe("audio.wav", parakeet::Decoder::TDT, /*timestamps=*/true);
+for (const auto &w : result.word_timestamps) {
+    std::cout << "[" << w.start << "s - " << w.end << "s] " << w.word << std::endl;
+}
+```
+
+## High-Level API
+
+### Offline Transcription (TDT-CTC 110M)
+
+```cpp
+parakeet::Transcriber t("model.safetensors", "vocab.txt");
+t.to_gpu();
+auto result = t.transcribe("audio.wav");
+```
+
+### Offline Transcription (TDT 600M Multilingual)
+
+```cpp
+parakeet::TDTTranscriber t("model.safetensors", "vocab.txt",
+                            parakeet::make_tdt_600m_config());
+auto result = t.transcribe("audio.wav");
+```
+
+### Streaming Transcription (EOU 120M)
+
+```cpp
+parakeet::StreamingTranscriber t("model.safetensors", "vocab.txt",
+                                  parakeet::make_eou_120m_config());
+
+// Feed audio chunks (e.g., from microphone)
+while (auto chunk = get_audio_chunk()) {
+    auto text = t.transcribe_chunk(chunk);
+    if (!text.empty()) std::cout << text << std::flush;
+}
+std::cout << t.get_text() << std::endl;
+```
+
+### Streaming Transcription (Nemotron 600M)
+
+```cpp
+// Latency modes: 0=80ms, 1=160ms, 6=560ms, 13=1120ms
+auto cfg = parakeet::make_nemotron_600m_config(/*latency_frames=*/1);
+parakeet::NemotronTranscriber t("model.safetensors", "vocab.txt", cfg);
+
+while (auto chunk = get_audio_chunk()) {
+    auto text = t.transcribe_chunk(chunk);
+    if (!text.empty()) std::cout << text << std::flush;
+}
+```
+
+### Speaker Diarization (Sortformer 117M)
+
+Identify who spoke when — detects up to 4 speakers with per-frame activity probabilities:
+
+```cpp
+parakeet::Sortformer model(parakeet::make_sortformer_117m_config());
+model.load_state_dict(axiom::io::safetensors::load("sortformer.safetensors"));
+
+auto wav = parakeet::read_wav("meeting.wav");
+auto features = parakeet::preprocess_audio(wav.samples, {.normalize = false});
+auto segments = model.diarize(features);
+
+for (const auto &seg : segments) {
+    std::cout << "Speaker " << seg.speaker_id
+              << ": [" << seg.start << "s - " << seg.end << "s]" << std::endl;
+}
+// Speaker 0: [0.56s - 2.96s]
+// Speaker 0: [3.36s - 4.40s]
+// Speaker 1: [4.80s - 6.24s]
+```
+
+Streaming diarization with arrival-order speaker tracking:
+
+```cpp
+parakeet::Sortformer model(parakeet::make_sortformer_117m_config());
+model.load_state_dict(axiom::io::safetensors::load("sortformer.safetensors"));
+
+parakeet::EncoderCache enc_cache;
+parakeet::AOSCCache aosc_cache(4);  // max 4 speakers
+
+while (auto chunk = get_audio_chunk()) {
+    auto features = parakeet::preprocess_audio(chunk, {.normalize = false});
+    auto segments = model.diarize_chunk(features, enc_cache, aosc_cache);
+    for (const auto &seg : segments) {
+        std::cout << "Speaker " << seg.speaker_id
+                  << ": [" << seg.start << "s - " << seg.end << "s]" << std::endl;
+    }
+}
 ```
 
 ## Low-Level API
@@ -36,8 +135,6 @@ For full control over the pipeline:
 
 **CTC** (English, punctuation & capitalization):
 ```cpp
-#include <parakeet/parakeet.hpp>
-
 auto cfg = parakeet::make_110m_config();
 parakeet::ParakeetTDTCTC model(cfg);
 model.load_state_dict(axiom::io::safetensors::load("model.safetensors"));
@@ -61,6 +158,18 @@ auto tokens = parakeet::tdt_greedy_decode(model, encoder_out, cfg.durations);
 std::cout << tokenizer.decode(tokens[0]) << std::endl;
 ```
 
+**Timestamps** (CTC or TDT):
+```cpp
+// CTC timestamps
+auto ts = parakeet::ctc_greedy_decode_with_timestamps(log_probs);
+
+// TDT timestamps
+auto ts = parakeet::tdt_greedy_decode_with_timestamps(model, encoder_out, cfg.durations);
+
+// Group into word-level timestamps
+auto words = parakeet::group_timestamps(ts[0], tokenizer.pieces());
+```
+
 **GPU acceleration** (Metal):
 ```cpp
 model.to(axiom::Device::GPU);
@@ -71,6 +180,60 @@ auto encoder_out = model.encoder()(features_gpu);
 auto tokens = parakeet::ctc_greedy_decode(
     model.ctc_decoder()(encoder_out).cpu()
 );
+```
+
+## CLI
+
+```
+Usage: parakeet <model.safetensors> <audio.wav> [options]
+
+Model types:
+  --model TYPE     Model type (default: tdt-ctc-110m)
+                   Types: tdt-ctc-110m, tdt-600m, eou-120m,
+                          nemotron-600m, sortformer
+
+Decoder options:
+  --ctc            Use CTC decoder (default: TDT)
+  --tdt            Use TDT decoder
+
+Other options:
+  --vocab PATH     SentencePiece vocab file
+  --gpu            Run on Metal GPU
+  --timestamps     Show word-level timestamps
+  --streaming      Use streaming mode (eou/nemotron models)
+  --latency N      Right context frames for nemotron (0/1/6/13)
+  --features PATH  Load pre-computed features from .npy file
+```
+
+Examples:
+
+```bash
+# Basic transcription (TDT decoder, default)
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt
+
+# CTC decoder
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt --ctc
+
+# GPU acceleration
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt --gpu
+
+# Word-level timestamps
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt --timestamps
+
+# 600M multilingual TDT model
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt --model tdt-600m
+
+# Streaming with EOU
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt --model eou-120m
+
+# Nemotron streaming with configurable latency
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt --model nemotron-600m --latency 6
+
+# Speaker diarization
+./build/parakeet sortformer.safetensors meeting.wav --model sortformer
+# Speaker 0: [0.56s - 2.96s]
+# Speaker 0: [3.36s - 4.40s]
+# Speaker 1: [4.80s - 6.24s]
 ```
 
 ## Setup
@@ -85,7 +248,13 @@ cd parakeet.cpp
 make build
 ```
 
-### Convert weights
+### Test
+
+```bash
+make test
+```
+
+### Convert Weights
 
 Download a NeMo checkpoint from NVIDIA and convert to safetensors:
 
@@ -98,15 +267,32 @@ pip install safetensors torch
 python scripts/convert_nemo.py parakeet-tdt_ctc-110m.nemo -o model.safetensors
 ```
 
-The converter also supports raw `.ckpt` files:
-```bash
-python scripts/convert_nemo.py model_weights.ckpt -o model.safetensors
+The converter supports all model types via the `--model` flag:
 
-# Inspect checkpoint keys
-python scripts/convert_nemo.py --dump model.nemo
+```bash
+# 110M TDT-CTC (default)
+python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model 110m-tdt-ctc
+
+# 600M multilingual TDT
+python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model 600m-tdt
+
+# 120M EOU streaming
+python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model eou-120m
+
+# 600M Nemotron streaming
+python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model nemotron-600m
+
+# 117M Sortformer diarization
+python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model sortformer
 ```
 
-### Download vocab
+Also supports raw `.ckpt` files and inspection:
+```bash
+python scripts/convert_nemo.py model_weights.ckpt -o model.safetensors
+python scripts/convert_nemo.py --dump model.nemo  # inspect checkpoint keys
+```
+
+### Download Vocab
 
 Grab the SentencePiece vocab from the same HuggingFace repo. The file is inside the `.nemo` archive, or download directly:
 
@@ -116,17 +302,11 @@ tar xf parakeet-tdt_ctc-110m.nemo ./tokenizer.model
 # or use the vocab.txt from the HF files page
 ```
 
-### Run
-
-```bash
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --ctc
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --gpu
-```
-
 ## Architecture
 
-Four model variants built on a shared FastConformer encoder:
+### Offline Models
+
+Built on a shared FastConformer encoder (Conv2d 8x subsampling → N Conformer blocks with relative positional attention):
 
 | Model | Class | Decoder | Use case |
 |-------|-------|---------|----------|
@@ -135,43 +315,20 @@ Four model variants built on a shared FastConformer encoder:
 | TDT | `ParakeetTDT` | LSTM + duration prediction | Better accuracy than RNNT |
 | TDT-CTC | `ParakeetTDTCTC` | Both TDT and CTC heads | Switch decoder at inference |
 
-All models use the same audio pipeline: 16kHz mono WAV → Mel spectrogram (80 bins, 512-point FFT) → FastConformer encoder (Conv2d 8x subsampling → N Conformer blocks with relative positional attention).
+### Streaming Models
 
-## API Reference
+Built on a cache-aware streaming FastConformer encoder with causal convolutions and bounded-context attention:
 
-Everything lives in the `parakeet` namespace:
+| Model | Class | Decoder | Use case |
+|-------|-------|---------|----------|
+| EOU | `ParakeetEOU` | Streaming RNNT | End-of-utterance detection |
+| Nemotron | `ParakeetNemotron` | Streaming TDT | Configurable latency streaming |
 
-```cpp
-// High-level
-Transcriber t(weights_path, vocab_path);                      // load model + vocab
-t.to_gpu();                                                    // optional Metal acceleration
-TranscribeResult result = t.transcribe("audio.wav");           // WAV file → text
-TranscribeResult result = t.transcribe(samples, Decoder::CTC); // raw samples → text
+### Diarization
 
-// Audio I/O
-WavData read_wav(const std::string &path);                    // 16-bit PCM or 32-bit float WAV
-Tensor preprocess_audio(const Tensor &waveform,               // waveform → (1, frames, 80) Mel features
-                        const AudioConfig &config = {});
-
-// Tokenizer
-Tokenizer tokenizer;
-tokenizer.load("vocab.txt");                                  // SentencePiece BPE vocab
-std::string text = tokenizer.decode(token_ids);               // token IDs → text
-
-// Models — construct with config, load weights from safetensors
-ParakeetCTC model(CTCConfig{});
-ParakeetTDT model(TDTConfig{});
-ParakeetTDTCTC model(TDTCTCConfig{});
-ParakeetRNNT model(RNNTConfig{});
-
-// Presets
-TDTCTCConfig cfg = make_110m_config();                        // nvidia/parakeet-tdt_ctc-110m
-
-// Decoding
-ctc_greedy_decode(log_probs, blank_id=1024);                  // CTC: argmax → collapse → remove blank
-tdt_greedy_decode(model, encoder_out, durations);             // TDT: per-frame with duration prediction
-rnnt_greedy_decode(model, encoder_out);                       // RNNT: per-frame autoregressive
-```
+| Model | Class | Architecture | Use case |
+|-------|-------|-------------|----------|
+| Sortformer | `Sortformer` | NEST encoder → Transformer → sigmoid | Speaker diarization (up to 4 speakers) |
 
 ## Benchmarks
 
@@ -188,9 +345,11 @@ Measured on Apple M3 16GB, 110M parameter model, ~10s audio clip:
 ## Notes
 
 - Audio: 16kHz mono WAV (16-bit PCM or 32-bit float)
-- CTC/TDT models have ~4-5 minute audio length limits; split longer files into chunks
-- Blank token ID is 1024 (not 0)
+- Offline models have ~4-5 minute audio length limits; split longer files or use streaming models
+- Blank token ID is 1024 (110M) or 8192 (600M)
 - GPU acceleration requires Apple Silicon with Metal support
+- Timestamps use frame-level alignment: `frame * 0.08s` (8x subsampling × 160 hop / 16kHz)
+- Sortformer diarization uses unnormalized features (`normalize = false`) — this differs from ASR models
 
 ## License
 
