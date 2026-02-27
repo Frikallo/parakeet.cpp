@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["torch", "numpy", "safetensors"]
+# ///
 """Compare C++ encoder intermediate outputs with PyTorch reference.
 Uses same weights from safetensors to build PyTorch reference.
 """

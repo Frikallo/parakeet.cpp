@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["torch", "pyyaml", "nemo_toolkit[asr]"]
+# ///
 """Benchmark PyTorch/NeMo inference for comparison with parakeet.cpp."""
 import os
 import sys

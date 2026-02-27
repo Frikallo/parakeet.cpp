@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["torch", "numpy", "safetensors", "packaging"]
+# ///
 """Run NeMo inference for reference comparison."""
 import torch
 import numpy as np
