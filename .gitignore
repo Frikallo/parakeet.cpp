@@ -2,6 +2,7 @@ build/
 .cache/
 models/
 venv/
+.venv/
 plan.md
 
 # OS
@@ -9,6 +10,8 @@ plan.md
 
 # IDEs
 .vscode/
+.claude/
+.cursor/
 .idea/
 *.swp
 *.swo
