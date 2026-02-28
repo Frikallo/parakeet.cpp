@@ -1,8 +1,8 @@
 # parakeet.cpp
 
-Fast speech recognition with NVIDIA's [Parakeet](https://huggingface.co/collections/nvidia/parakeet-702d03111484ef) models in pure C++.
+Fast speech recognition with NVIDIA's [Parakeet](https://huggingface.co/collections/nvidia/parakeet) models in pure C++.
 
-Built on [axiom](https://github.com/noahkay13/axiom) — a lightweight tensor library with automatic Metal GPU acceleration. No ONNX runtime, no Python runtime, no heavyweight dependencies. Just C++ and one tensor library that outruns PyTorch MPS.
+Built on [axiom](https://github.com/frikallo/axiom) — a lightweight tensor library with automatic Metal GPU acceleration. No ONNX runtime, no Python runtime, no heavyweight dependencies. Just C++ and one tensor library that outruns PyTorch MPS.
 
 **~27ms encoder inference on Apple Silicon GPU** for 10s audio (110M model) — 96x faster than CPU.
 
@@ -243,7 +243,7 @@ Examples:
 Requires C++20. Axiom is the only dependency (included as a submodule).
 
 ```bash
-git clone --recursive https://github.com/noahkay13/parakeet.cpp
+git clone --recursive https://github.com/frikallo/parakeet.cpp
 cd parakeet.cpp
 make build
 ```
