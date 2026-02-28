@@ -20,6 +20,9 @@ static void print_usage(const char *prog) {
         << "\nDecoder options:\n"
         << "  --ctc          Use CTC decoder (default: TDT)\n"
         << "  --tdt          Use TDT decoder\n"
+        << "\nPhrase boost:\n"
+        << "  --boost PHRASE   Boost a phrase (repeatable)\n"
+        << "  --boost-score N  Boost score (default: 5.0)\n"
         << "\nOther options:\n"
         << "  --vocab PATH   SentencePiece vocab file for detokenization\n"
         << "  --sortformer-weights PATH  Sortformer weights (for diarized "
@@ -38,7 +41,9 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
                             const std::string &audio_path,
                             const std::string &vocab_path,
                             const std::string &features_path, bool use_ctc,
-                            bool use_gpu, bool show_timestamps) {
+                            bool use_gpu, bool show_timestamps,
+                            const std::vector<std::string> &boost_phrases = {},
+                            float boost_score = 5.0f) {
     using namespace parakeet;
     using Clock = std::chrono::high_resolution_clock;
 
@@ -98,35 +103,59 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
                      .count()
               << " ms" << std::endl;
 
+    // Build phrase boost trie if needed
+    ContextTrie trie;
+    bool use_boost = !boost_phrases.empty() && tokenizer.loaded();
+    if (use_boost) {
+        trie.build(boost_phrases, tokenizer);
+        std::cout << "Phrase boost: " << boost_phrases.size() << " phrases, "
+                  << trie.size() << " trie nodes" << std::endl;
+    }
+
     t0 = Clock::now();
     std::vector<std::vector<int>> token_ids;
     std::vector<std::vector<TimestampedToken>> timestamped_tokens;
 
     if (use_ctc) {
         auto log_probs = model.ctc_decoder()(encoder_out);
+        auto cpu_lp = log_probs.cpu();
         if (show_timestamps) {
             timestamped_tokens =
-                ctc_greedy_decode_with_timestamps(log_probs.cpu());
+                use_boost ? ctc_greedy_decode_with_timestamps_boosted(
+                                cpu_lp, trie, boost_score)
+                          : ctc_greedy_decode_with_timestamps(cpu_lp);
             token_ids.resize(timestamped_tokens.size());
             for (size_t b = 0; b < timestamped_tokens.size(); ++b)
                 for (const auto &t : timestamped_tokens[b])
                     token_ids[b].push_back(t.token_id);
         } else {
-            token_ids = ctc_greedy_decode(log_probs.cpu());
+            token_ids =
+                use_boost ? ctc_greedy_decode_boosted(cpu_lp, trie, boost_score)
+                          : ctc_greedy_decode(cpu_lp);
         }
-        std::cout << "Decoder: CTC" << std::endl;
+        std::cout << "Decoder: CTC" << (use_boost ? " (boosted)" : "")
+                  << std::endl;
     } else {
         if (show_timestamps) {
-            timestamped_tokens = tdt_greedy_decode_with_timestamps(
-                model, encoder_out, cfg.durations);
+            timestamped_tokens =
+                use_boost
+                    ? tdt_greedy_decode_with_timestamps_boosted(
+                          model, encoder_out, cfg.durations, trie, boost_score)
+                    : tdt_greedy_decode_with_timestamps(model, encoder_out,
+                                                        cfg.durations);
             token_ids.resize(timestamped_tokens.size());
             for (size_t b = 0; b < timestamped_tokens.size(); ++b)
                 for (const auto &t : timestamped_tokens[b])
                     token_ids[b].push_back(t.token_id);
         } else {
-            token_ids = tdt_greedy_decode(model, encoder_out, cfg.durations);
+            token_ids =
+                use_boost
+                    ? tdt_greedy_decode_boosted(
+                          model, encoder_out, cfg.durations, trie, boost_score)
+                    : tdt_greedy_decode(model, encoder_out, cfg.durations);
         }
-        std::cout << "Decoder: TDT" << std::endl;
+        std::cout << "Decoder: TDT" << (use_boost ? " (boosted)" : "")
+                  << std::endl;
     }
     t1 = Clock::now();
     std::cout << "Decode: "
@@ -169,7 +198,9 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
 static int run_tdt_600m(const std::string &weights_path,
                         const std::string &audio_path,
                         const std::string &vocab_path, bool use_gpu,
-                        bool show_timestamps) {
+                        bool show_timestamps,
+                        const std::vector<std::string> &boost_phrases = {},
+                        float boost_score = 5.0f) {
     using namespace parakeet;
     using Clock = std::chrono::high_resolution_clock;
 
@@ -206,21 +237,37 @@ static int run_tdt_600m(const std::string &weights_path,
                      .count()
               << " ms" << std::endl;
 
+    // Build phrase boost trie if needed
+    ContextTrie trie;
+    bool use_boost = !boost_phrases.empty() && tokenizer.loaded();
+    if (use_boost) {
+        trie.build(boost_phrases, tokenizer);
+        std::cout << "Phrase boost: " << boost_phrases.size() << " phrases, "
+                  << trie.size() << " trie nodes" << std::endl;
+    }
+
     std::vector<std::vector<int>> token_ids;
     std::vector<std::vector<TimestampedToken>> timestamped_tokens;
 
     int blank_id = cfg.prediction.vocab_size - 1;
 
     if (show_timestamps) {
-        timestamped_tokens = tdt_greedy_decode_with_timestamps(
-            model, encoder_out, cfg.durations, blank_id);
+        timestamped_tokens =
+            use_boost ? tdt_greedy_decode_with_timestamps_boosted(
+                            model, encoder_out, cfg.durations, trie,
+                            boost_score, blank_id)
+                      : tdt_greedy_decode_with_timestamps(
+                            model, encoder_out, cfg.durations, blank_id);
         token_ids.resize(timestamped_tokens.size());
         for (size_t b = 0; b < timestamped_tokens.size(); ++b)
             for (const auto &t : timestamped_tokens[b])
                 token_ids[b].push_back(t.token_id);
     } else {
-        token_ids =
-            tdt_greedy_decode(model, encoder_out, cfg.durations, blank_id);
+        token_ids = use_boost ? tdt_greedy_decode_boosted(model, encoder_out,
+                                                          cfg.durations, trie,
+                                                          boost_score, blank_id)
+                              : tdt_greedy_decode(model, encoder_out,
+                                                  cfg.durations, blank_id);
     }
 
     for (size_t b = 0; b < token_ids.size(); ++b) {
@@ -610,6 +657,8 @@ int main(int argc, char *argv[]) {
         std::string vocab_path;
         std::string features_path;
         std::string sortformer_weights_path;
+        std::vector<std::string> boost_phrases;
+        float boost_score = 5.0f;
 
         for (int i = 3; i < argc; ++i) {
             std::string arg = argv[i];
@@ -633,6 +682,10 @@ int main(int argc, char *argv[]) {
                 features_path = argv[++i];
             } else if (arg == "--sortformer-weights" && i + 1 < argc) {
                 sortformer_weights_path = argv[++i];
+            } else if (arg == "--boost" && i + 1 < argc) {
+                boost_phrases.push_back(argv[++i]);
+            } else if (arg == "--boost-score" && i + 1 < argc) {
+                boost_score = std::stof(argv[++i]);
             } else {
                 std::cerr << "Unknown option: " << arg << std::endl;
                 print_usage(argv[0]);
@@ -646,12 +699,12 @@ int main(int argc, char *argv[]) {
         }
 
         if (model_type == "tdt-ctc-110m") {
-            return run_tdt_ctc_110m(weights_path, audio_path, vocab_path,
-                                    features_path, use_ctc, use_gpu,
-                                    show_timestamps);
+            return run_tdt_ctc_110m(
+                weights_path, audio_path, vocab_path, features_path, use_ctc,
+                use_gpu, show_timestamps, boost_phrases, boost_score);
         } else if (model_type == "tdt-600m") {
             return run_tdt_600m(weights_path, audio_path, vocab_path, use_gpu,
-                                show_timestamps);
+                                show_timestamps, boost_phrases, boost_score);
         } else if (model_type == "rnnt-600m") {
             return run_rnnt_600m(weights_path, audio_path, vocab_path, use_gpu,
                                  show_timestamps);

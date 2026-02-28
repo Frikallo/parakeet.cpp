@@ -50,6 +50,7 @@ add_library(parakeet_lib
     src/transformer.cpp
     src/sortformer.cpp
     src/diarize.cpp
+    src/phrase_boost.cpp
 )
 
 add_library(Parakeet::parakeet ALIAS parakeet_lib)

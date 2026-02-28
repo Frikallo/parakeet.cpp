@@ -11,6 +11,7 @@
 #include "parakeet/eou.hpp"
 #include "parakeet/lstm.hpp"
 #include "parakeet/nemotron.hpp"
+#include "parakeet/phrase_boost.hpp"
 #include "parakeet/rnnt.hpp"
 #include "parakeet/sortformer.hpp"
 #include "parakeet/streaming_encoder.hpp"

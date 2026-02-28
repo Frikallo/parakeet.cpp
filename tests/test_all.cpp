@@ -1209,6 +1209,279 @@ TEST_F(ModelTest, DiarizedTranscriberE2E) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  Phase 5: Phrase Boosting
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Tokenizer::encode() ────────────────────────────────────────────────────
+
+TEST(TokenizerEncode, EmptyTokenizer) {
+    Tokenizer tok;
+    auto ids = tok.encode("hello");
+    EXPECT_TRUE(ids.empty());
+}
+
+TEST(TokenizerEncode, EmptyString) {
+    if (!has_vocab())
+        GTEST_SKIP() << "vocab not found";
+    Tokenizer tok;
+    tok.load(model_path("vocab.txt"));
+    auto ids = tok.encode("");
+    EXPECT_TRUE(ids.empty());
+}
+
+TEST(TokenizerEncode, SingleWord) {
+    if (!has_vocab())
+        GTEST_SKIP() << "vocab not found";
+    Tokenizer tok;
+    tok.load(model_path("vocab.txt"));
+    auto ids = tok.encode("hello");
+    EXPECT_FALSE(ids.empty());
+    // Round-trip: encode then decode should recover the word
+    auto text = tok.decode(ids);
+    EXPECT_EQ(text, "hello");
+}
+
+TEST(TokenizerEncode, MultiWord) {
+    if (!has_vocab())
+        GTEST_SKIP() << "vocab not found";
+    Tokenizer tok;
+    tok.load(model_path("vocab.txt"));
+    auto ids = tok.encode("hello world");
+    EXPECT_FALSE(ids.empty());
+    auto text = tok.decode(ids);
+    EXPECT_EQ(text, "hello world");
+}
+
+TEST(TokenizerEncode, RoundTrip) {
+    if (!has_vocab())
+        GTEST_SKIP() << "vocab not found";
+    Tokenizer tok;
+    tok.load(model_path("vocab.txt"));
+    std::vector<std::string> test_phrases = {
+        "portrait", "Phoebe", "the quick brown fox",
+        "artificial intelligence"};
+    for (const auto &phrase : test_phrases) {
+        auto ids = tok.encode(phrase);
+        EXPECT_FALSE(ids.empty()) << "Failed to encode: " << phrase;
+        auto decoded = tok.decode(ids);
+        // Case-insensitive comparison since SentencePiece lowercases
+        std::string lower_phrase = phrase;
+        std::transform(lower_phrase.begin(), lower_phrase.end(),
+                       lower_phrase.begin(), ::tolower);
+        std::string lower_decoded = decoded;
+        std::transform(lower_decoded.begin(), lower_decoded.end(),
+                       lower_decoded.begin(), ::tolower);
+        EXPECT_EQ(lower_decoded, lower_phrase) << "Round-trip failed: " << phrase;
+    }
+}
+
+// ─── ContextTrie ────────────────────────────────────────────────────────────
+
+TEST(ContextTrie, EmptyTrie) {
+    ContextTrie trie;
+    EXPECT_TRUE(trie.empty());
+    EXPECT_EQ(trie.size(), 1u); // just root
+
+    std::unordered_set<int> active = {0};
+    auto boosted = trie.get_boosted_tokens(active);
+    EXPECT_TRUE(boosted.empty());
+}
+
+TEST(ContextTrie, InsertAndSize) {
+    ContextTrie trie;
+    trie.insert({10, 20, 30});
+    EXPECT_FALSE(trie.empty());
+    EXPECT_EQ(trie.size(), 4u); // root + 3 nodes
+}
+
+TEST(ContextTrie, GetBoostedTokens) {
+    ContextTrie trie;
+    trie.insert({10, 20, 30});
+    trie.insert({10, 25});
+
+    std::unordered_set<int> active = {0};
+    auto boosted = trie.get_boosted_tokens(active);
+    EXPECT_EQ(boosted.size(), 1u); // only token 10 from root
+    EXPECT_TRUE(boosted.count(10));
+}
+
+TEST(ContextTrie, Advance) {
+    ContextTrie trie;
+    trie.insert({10, 20, 30});
+
+    std::unordered_set<int> active = {0};
+    auto next = trie.advance(active, 10);
+    EXPECT_TRUE(next.count(0)); // always includes root
+
+    // After advancing with 10, boosted tokens should include 20
+    auto boosted = trie.get_boosted_tokens(next);
+    EXPECT_TRUE(boosted.count(20));
+}
+
+TEST(ContextTrie, AdvanceNonMatchingToken) {
+    ContextTrie trie;
+    trie.insert({10, 20, 30});
+
+    std::unordered_set<int> active = {0};
+    auto next = trie.advance(active, 999);
+    // Should only have root
+    EXPECT_EQ(next.size(), 1u);
+    EXPECT_TRUE(next.count(0));
+}
+
+TEST(ContextTrie, MultiplePhrases) {
+    ContextTrie trie;
+    trie.insert({10, 20});
+    trie.insert({10, 30});
+    trie.insert({40, 50});
+
+    std::unordered_set<int> active = {0};
+    auto boosted = trie.get_boosted_tokens(active);
+    // Root should have children 10 and 40
+    EXPECT_EQ(boosted.size(), 2u);
+    EXPECT_TRUE(boosted.count(10));
+    EXPECT_TRUE(boosted.count(40));
+
+    // Advance with 10
+    auto next = trie.advance(active, 10);
+    auto boosted2 = trie.get_boosted_tokens(next);
+    // From the node after 10: children 20 and 30; plus root children 10 and 40
+    EXPECT_TRUE(boosted2.count(20));
+    EXPECT_TRUE(boosted2.count(30));
+    EXPECT_TRUE(boosted2.count(10)); // from root
+    EXPECT_TRUE(boosted2.count(40)); // from root
+}
+
+TEST(ContextTrie, BuildFromPhrases) {
+    if (!has_vocab())
+        GTEST_SKIP() << "vocab not found";
+    Tokenizer tok;
+    tok.load(model_path("vocab.txt"));
+
+    ContextTrie trie;
+    trie.build({"portrait", "Phoebe"}, tok);
+    EXPECT_FALSE(trie.empty());
+    EXPECT_GT(trie.size(), 1u);
+}
+
+// ─── Boosted CTC Decode ────────────────────────────────────────────────────
+
+TEST(BoostedCTCDecode, EmptyTrieMatchesUnboosted) {
+    int vocab = 1025;
+    int seq_len = 6;
+    std::vector<float> data(1 * seq_len * vocab, -10.0f);
+    int pattern[] = {5, 5, 1024, 8, 8, 8};
+    for (int t = 0; t < seq_len; ++t)
+        data[t * vocab + pattern[t]] = 0.0f;
+
+    auto lp = Tensor::from_data(data.data(),
+                                 Shape{1, static_cast<size_t>(seq_len),
+                                       static_cast<size_t>(vocab)},
+                                 true);
+
+    auto unboosted = ctc_greedy_decode(lp, 1024);
+    ContextTrie trie;
+    auto boosted = ctc_greedy_decode_boosted(lp, trie, 5.0f, 1024);
+
+    ASSERT_EQ(unboosted.size(), boosted.size());
+    EXPECT_EQ(unboosted[0], boosted[0]);
+}
+
+TEST(BoostedCTCDecode, BoostFlipsDecision) {
+    // Set up: two tokens are close, boost should flip the winner
+    int vocab = 1025;
+    int seq_len = 3;
+    std::vector<float> data(1 * seq_len * vocab, -10.0f);
+
+    // Frame 0: token 42 slightly wins over token 43
+    data[0 * vocab + 42] = -0.1f;
+    data[0 * vocab + 43] = -0.2f;
+    data[0 * vocab + 1024] = -5.0f;
+
+    // Frame 1: blank
+    data[1 * vocab + 1024] = 0.0f;
+
+    // Frame 2: blank
+    data[2 * vocab + 1024] = 0.0f;
+
+    auto lp = Tensor::from_data(data.data(),
+                                 Shape{1, static_cast<size_t>(seq_len),
+                                       static_cast<size_t>(vocab)},
+                                 true);
+
+    // Without boost: token 42 wins
+    auto unboosted = ctc_greedy_decode(lp, 1024);
+    ASSERT_EQ(unboosted[0].size(), 1u);
+    EXPECT_EQ(unboosted[0][0], 42);
+
+    // With boost on token 43: should flip
+    ContextTrie trie;
+    trie.insert({43});
+    auto boosted = ctc_greedy_decode_boosted(lp, trie, 5.0f, 1024);
+    ASSERT_EQ(boosted[0].size(), 1u);
+    EXPECT_EQ(boosted[0][0], 43);
+}
+
+TEST(BoostedCTCDecode, TimestampsEmptyTrieMatchesUnboosted) {
+    int vocab = 1025;
+    int seq_len = 6;
+    std::vector<float> data(1 * seq_len * vocab, -10.0f);
+    int pattern[] = {5, 5, 1024, 8, 8, 8};
+    for (int t = 0; t < seq_len; ++t)
+        data[t * vocab + pattern[t]] = 0.0f;
+
+    auto lp = Tensor::from_data(data.data(),
+                                 Shape{1, static_cast<size_t>(seq_len),
+                                       static_cast<size_t>(vocab)},
+                                 true);
+
+    auto unboosted = ctc_greedy_decode_with_timestamps(lp, 1024);
+    ContextTrie trie;
+    auto boosted =
+        ctc_greedy_decode_with_timestamps_boosted(lp, trie, 5.0f, 1024);
+
+    ASSERT_EQ(unboosted.size(), boosted.size());
+    ASSERT_EQ(unboosted[0].size(), boosted[0].size());
+    for (size_t i = 0; i < unboosted[0].size(); ++i) {
+        EXPECT_EQ(unboosted[0][i].token_id, boosted[0][i].token_id);
+        EXPECT_EQ(unboosted[0][i].start_frame, boosted[0][i].start_frame);
+    }
+}
+
+// ─── Integration: Transcriber with boost (requires model) ──────────────────
+
+TEST_F(ModelTest, TranscriberBoostEmptyMatchesUnboosted) {
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+    auto unboosted =
+        t.transcribe(model_path("2086-149220-0033.wav"), Decoder::TDT);
+
+    TranscribeOptions opts;
+    opts.decoder = Decoder::TDT;
+    opts.boost_phrases = {}; // empty
+    auto boosted = t.transcribe(model_path("2086-149220-0033.wav"), opts);
+
+    EXPECT_EQ(unboosted.text, boosted.text);
+    EXPECT_EQ(unboosted.token_ids, boosted.token_ids);
+}
+
+TEST_F(ModelTest, TranscriberBoostContainsTargetPhrases) {
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+
+    TranscribeOptions opts;
+    opts.decoder = Decoder::TDT;
+    opts.boost_phrases = {"portrait", "Phoebe"};
+    opts.boost_score = 5.0f;
+    auto result = t.transcribe(model_path("2086-149220-0033.wav"), opts);
+
+    EXPECT_FALSE(result.text.empty());
+    // These words should appear in the test audio
+    std::string lower = result.text;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    EXPECT_NE(lower.find("portrait"), std::string::npos);
+    EXPECT_NE(lower.find("phoebe"), std::string::npos);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════════════════════════════
 
