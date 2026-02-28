@@ -1,6 +1,11 @@
 BUILD_DIR   := build
 CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Release
 
+# Optional: make build CLI=OFF
+ifdef CLI
+    CMAKE_FLAGS += -DPARAKEET_BUILD_CLI=$(CLI)
+endif
+
 # Use Ninja if available, otherwise Unix Makefiles
 ifneq ($(shell which ninja 2>/dev/null),)
     GENERATOR    := Ninja
@@ -11,7 +16,7 @@ else
     BUILD_CMD    := $(MAKE) -C $(BUILD_DIR) -j$(NPROC)
 endif
 
-.PHONY: all configure build run test bench bench-single debug format format-check clean
+.PHONY: all configure build run test bench bench-single debug install format format-check clean
 
 all: build
 
@@ -36,6 +41,9 @@ bench: build
 
 bench-single: build
 	./$(BUILD_DIR)/parakeet_bench $(ARGS)
+
+install: build
+	cmake --install $(BUILD_DIR)
 
 format:
 	find src include -name '*.cpp' -o -name '*.hpp' | xargs clang-format -i

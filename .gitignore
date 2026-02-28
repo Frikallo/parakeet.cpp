@@ -3,3 +3,28 @@ build/
 models/
 venv/
 plan.md
+
+# OS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+
+# Coverage
+*.gcno
+*.gcda
+*.gcov
+lcov.info
+coverage/

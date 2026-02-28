@@ -283,11 +283,17 @@ Examples:
   --sortformer-weights sortformer.safetensors --vocab vocab.txt
 ```
 
+## Requirements
+
+- C++20 compiler (Clang 14+ or GCC 12+)
+- CMake 3.20+
+- macOS 13+ for Metal GPU acceleration
+
 ## Setup
 
 ### Build
 
-Requires C++20. Axiom is the only dependency (included as a submodule).
+Axiom is the only dependency (included as a submodule).
 
 ```bash
 git clone --recursive https://github.com/frikallo/parakeet.cpp
@@ -347,6 +353,32 @@ Grab the SentencePiece vocab from the same HuggingFace repo. The file is inside 
 # Extract from .nemo
 tar xf parakeet-tdt_ctc-110m.nemo ./tokenizer.model
 # or use the vocab.txt from the HF files page
+```
+
+## Using as a Library
+
+### CMake `find_package`
+
+After installing (`make install` or `cmake --install build`):
+
+```cmake
+find_package(Parakeet REQUIRED)
+target_link_libraries(myapp PRIVATE Parakeet::parakeet)
+```
+
+### CMake `add_subdirectory`
+
+Add parakeet.cpp as a subdirectory or git submodule:
+
+```cmake
+add_subdirectory(third_party/parakeet.cpp)
+target_link_libraries(myapp PRIVATE Parakeet::parakeet)
+```
+
+### pkg-config
+
+```bash
+g++ -std=c++20 myapp.cpp $(pkg-config --cflags --libs parakeet) -o myapp
 ```
 
 ## Architecture

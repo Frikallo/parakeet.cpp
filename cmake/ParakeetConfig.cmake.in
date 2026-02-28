@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Axiom)
+
+include("${CMAKE_CURRENT_LIST_DIR}/ParakeetTargets.cmake")
+check_required_components(Parakeet)
