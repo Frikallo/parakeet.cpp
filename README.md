@@ -373,6 +373,44 @@ make bench-single ARGS="--110m=models/model.safetensors --benchmark_filter=110m"
 
 Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. All Google Benchmark flags (`--benchmark_filter`, `--benchmark_format=json`, `--benchmark_repetitions=N`) are passed through.
 
+## Roadmap
+
+### Tier 1 — High Impact
+
+- [ ] **Confidence scores** — Per-word confidence (0.0–1.0) from token log-probs. Entropy-based or max-logprob aggregation.
+- [ ] **Phrase boosting (context biasing)** — Token-level trie over a boost list. Bias log-probs during decode for domain-specific vocabulary (product names, jargon, proper nouns). Works with greedy decode.
+- [ ] **Beam search decoding** — CTC prefix beam search and TDT/RNNT beam search with configurable width. 5–15% relative WER reduction over greedy.
+- [ ] **N-gram LM shallow fusion** — Load ARPA language models, score partial hypotheses during beam search. Domain-adapted decoding.
+- [ ] **Inverse text normalization (ITN)** — Convert spoken form to written form: "one hundred twenty three" → "123", "march fifth" → "March 5th". Rule-based engine for numbers, dates, money, time.
+
+### Audio & I/O
+
+- [ ] **Multi-format audio loading** — MP3 (minimp3), FLAC (dr_flac), Opus (opusfile), OGG Vorbis (stb_vorbis), M4A/AAC. Header-only C libraries, no external deps. Unified `read_audio(path)` replaces `read_wav()`.
+- [ ] **Automatic resampling** — Detect source sample rate and resample to 16kHz. Sinc interpolation (libsamplerate) or polyphase FIR. Currently 44.1/48kHz input silently produces garbage.
+- [ ] **Sample rate validation** — `preprocess_audio()` should check and reject non-16kHz input (or auto-resample) instead of silently computing wrong features.
+- [ ] **Load from memory buffer** — `read_audio(const uint8_t* data, size_t len)` and `read_audio(std::span<const float> pcm, int sample_rate)` for in-process use without temp files.
+- [ ] **Extended WAV support** — 24-bit PCM, 8-bit unsigned, A-law/mu-law (common in telephony).
+- [ ] **Audio duration query** — `get_audio_duration(path)` without fully decoding the file. Read header only.
+- [ ] **Progress callbacks** — `transcribe(path, {.on_progress = callback})` for long files. Report preprocessing / encoder / decode stages.
+- [ ] **Streaming from raw PCM** — Helper to feed `int16_t*` or `float*` microphone buffers directly into `StreamingTranscriber` without manual Tensor construction.
+
+### Tier 2 — Production Readiness
+
+- [ ] **Diarized transcription** — Fuse Sortformer speaker segments with ASR word timestamps. Output: "Speaker 1: Hello. Speaker 2: Hi there."
+- [ ] **Long-form audio chunking** — Split audio >30s into overlapping windows, run encoder on each, merge transcriptions at overlap boundaries.
+- [ ] **VAD (voice activity detection)** — Skip silent regions, reduce compute. Silero VAD integration or energy-based.
+- [ ] **Batch inference** — Pad + length-mask multiple audio files, batch through encoder and decoder. GPU utilization improvement.
+- [ ] **Neural LM rescoring** — N-best reranking with a Transformer LM after beam search.
+
+### Tier 3 — Ecosystem
+
+- [ ] **C API** — Flat C interface (`parakeet_transcribe(...)`) for FFI from Python, Swift, Go, Rust.
+- [ ] **f16 inference** — Half-precision weights and compute. 2x memory reduction, faster on Apple Silicon.
+- [ ] **Model quantization** — INT8/INT4 weight quantization for mobile deployment.
+- [ ] **ONNX / CoreML export** — Deploy on iOS/Android without the axiom runtime.
+- [ ] **Hotword / wake word detection** — "Hey Parakeet" trigger phrase detection.
+- [ ] **Speaker embedding extraction** — Speaker verification from Sortformer intermediate layers or TitaNet.
+
 ## Notes
 
 - Audio: 16kHz mono WAV (16-bit PCM or 32-bit float)
