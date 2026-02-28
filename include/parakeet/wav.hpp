@@ -13,8 +13,10 @@ struct WavData {
     int num_samples;  // number of frames (after downmix = mono samples)
 };
 
+// Deprecated: use read_audio() from <parakeet/audio_io.hpp> instead.
+// read_wav now forwards to read_audio internally.
+//
 // Read a WAV file and return float32 samples in [-1, 1].
-// Supports 16-bit PCM (format 1) and 32-bit float (format 3).
 // Multi-channel audio is downmixed to mono.
 WavData read_wav(const std::string &path);
 

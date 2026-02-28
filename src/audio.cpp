@@ -1,8 +1,10 @@
 #include "parakeet/audio.hpp"
+#include "parakeet/audio_io.hpp"
 
 #include <axiom/fft.hpp>
 
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 namespace parakeet {
@@ -153,6 +155,15 @@ Tensor preprocess_audio(const Tensor &waveform, const AudioConfig &config) {
     // n_mels)
     auto result = features.transpose().unsqueeze(0);
     return result;
+}
+
+Tensor preprocess_audio(const AudioData &audio, const AudioConfig &config) {
+    if (audio.sample_rate != config.sample_rate) {
+        throw std::runtime_error(
+            "Sample rate mismatch: audio=" + std::to_string(audio.sample_rate) +
+            " expected=" + std::to_string(config.sample_rate));
+    }
+    return preprocess_audio(audio.samples, config);
 }
 
 // ─── Streaming Audio Preprocessor ────────────────────────────────────────────

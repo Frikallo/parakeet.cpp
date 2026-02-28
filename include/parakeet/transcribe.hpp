@@ -7,6 +7,7 @@
 #include <axiom/io/safetensors.hpp>
 
 #include "parakeet/audio.hpp"
+#include "parakeet/audio_io.hpp"
 #include "parakeet/config.hpp"
 #include "parakeet/ctc.hpp"
 #include "parakeet/tdt.hpp"
@@ -32,7 +33,8 @@ struct TranscribeResult {
 
 enum class Decoder { CTC, TDT };
 
-/// Transcribe a WAV file to text using a ParakeetTDTCTC model.
+/// Transcribe an audio file to text using a ParakeetTDTCTC model.
+/// Supports WAV, FLAC, MP3, OGG. Automatically resamples to 16kHz.
 ///
 /// This is the simplest entry point — loads audio, preprocesses, encodes,
 /// decodes, and detokenizes in one call.
@@ -59,12 +61,12 @@ class Transcriber {
         use_gpu_ = true;
     }
 
-    /// Transcribe a WAV file.
-    TranscribeResult transcribe(const std::string &wav_path,
+    /// Transcribe an audio file (WAV, FLAC, MP3, OGG).
+    TranscribeResult transcribe(const std::string &audio_path,
                                 Decoder decoder = Decoder::TDT,
                                 bool timestamps = false) {
-        auto wav = read_wav(wav_path);
-        return transcribe(wav.samples, decoder, timestamps);
+        auto audio = read_audio(audio_path);
+        return transcribe(audio.samples, decoder, timestamps);
     }
 
     /// Transcribe from raw float32 samples (16kHz mono).
@@ -165,10 +167,10 @@ class TDTTranscriber {
         use_gpu_ = true;
     }
 
-    TranscribeResult transcribe(const std::string &wav_path,
+    TranscribeResult transcribe(const std::string &audio_path,
                                 bool timestamps = false) {
-        auto wav = read_wav(wav_path);
-        return transcribe(wav.samples, timestamps);
+        auto audio = read_audio(audio_path);
+        return transcribe(audio.samples, timestamps);
     }
 
     TranscribeResult transcribe(const axiom::Tensor &samples,

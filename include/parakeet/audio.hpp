@@ -24,6 +24,12 @@ struct AudioConfig {
 axiom::Tensor preprocess_audio(const axiom::Tensor &waveform,
                                const AudioConfig &config = {});
 
+// Overload accepting AudioData (from audio_io.hpp).
+// Validates sample rate matches config before preprocessing.
+struct AudioData; // forward declaration
+axiom::Tensor preprocess_audio(const AudioData &audio,
+                               const AudioConfig &config = {});
+
 // ─── Streaming Audio Preprocessor ────────────────────────────────────────────
 
 // Maintains preemphasis state and STFT overlap buffer for chunk-wise

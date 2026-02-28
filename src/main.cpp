@@ -63,16 +63,20 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
                   << std::endl;
     }
 
-    auto wav = read_wav(audio_path);
-    std::cout << "Audio: " << wav.sample_rate << "Hz, " << wav.num_samples
-              << " samples" << std::endl;
+    auto audio = read_audio(audio_path);
+    std::cout << "Audio: " << audio.original_sample_rate << "Hz"
+              << (audio.original_sample_rate != audio.sample_rate
+                      ? " -> " + std::to_string(audio.sample_rate) + "Hz"
+                      : "")
+              << ", " << audio.num_samples << " samples, " << std::fixed
+              << std::setprecision(1) << audio.duration << "s" << std::endl;
 
     auto t0 = Clock::now();
     axiom::Tensor features;
     if (!features_path.empty()) {
         features = axiom::io::numpy::load(features_path);
     } else {
-        features = preprocess_audio(wav.samples);
+        features = preprocess_audio(audio.samples);
     }
     auto t1 = Clock::now();
     std::cout << "Preprocessing: "
@@ -184,10 +188,10 @@ static int run_tdt_600m(const std::string &weights_path,
         tokenizer.load(vocab_path);
     }
 
-    auto wav = read_wav(audio_path);
+    auto audio = read_audio(audio_path);
     AudioConfig audio_cfg;
     audio_cfg.n_mels = cfg.encoder.mel_bins;
-    auto features = preprocess_audio(wav.samples, audio_cfg);
+    auto features = preprocess_audio(audio.samples, audio_cfg);
     if (use_gpu)
         features = features.gpu();
 
@@ -263,8 +267,8 @@ static int run_rnnt_600m(const std::string &weights_path,
         tokenizer.load(vocab_path);
     }
 
-    auto wav = read_wav(audio_path);
-    auto features = preprocess_audio(wav.samples);
+    auto audio = read_audio(audio_path);
+    auto features = preprocess_audio(audio.samples);
     if (use_gpu)
         features = features.gpu();
 
@@ -309,13 +313,17 @@ static int run_eou_streaming(const std::string &weights_path,
     if (use_gpu)
         transcriber.to_gpu();
 
-    auto wav = read_wav(audio_path);
-    std::cout << "Audio: " << wav.sample_rate << "Hz, " << wav.num_samples
-              << " samples" << std::endl;
+    auto audio = read_audio(audio_path);
+    std::cout << "Audio: " << audio.original_sample_rate << "Hz"
+              << (audio.original_sample_rate != audio.sample_rate
+                      ? " -> " + std::to_string(audio.sample_rate) + "Hz"
+                      : "")
+              << ", " << audio.num_samples << " samples, " << std::fixed
+              << std::setprecision(1) << audio.duration << "s" << std::endl;
 
     // Simulate streaming: process in ~160ms chunks (2560 samples at 16kHz)
     constexpr int CHUNK_SAMPLES = 2560;
-    auto samples = wav.samples.ascontiguousarray();
+    auto samples = audio.samples.ascontiguousarray();
     int total = static_cast<int>(samples.shape()[0]);
     const float *data = samples.typed_data<float>();
 
@@ -358,10 +366,10 @@ static int run_nemotron_streaming(const std::string &weights_path,
     if (use_gpu)
         transcriber.to_gpu();
 
-    auto wav = read_wav(audio_path);
+    auto audio = read_audio(audio_path);
 
     constexpr int CHUNK_SAMPLES = 2560;
-    auto samples = wav.samples.ascontiguousarray();
+    auto samples = audio.samples.ascontiguousarray();
     int total = static_cast<int>(samples.shape()[0]);
     const float *data = samples.typed_data<float>();
 
@@ -404,11 +412,11 @@ static int run_sortformer(const std::string &weights_path,
         model.to(axiom::Device::GPU);
     }
 
-    auto wav = read_wav(audio_path);
+    auto audio = read_audio(audio_path);
     AudioConfig audio_cfg;
     audio_cfg.n_mels = cfg.nest_encoder.mel_bins;
     audio_cfg.normalize = false; // sortformer uses normalize: NA
-    auto features = preprocess_audio(wav.samples, audio_cfg);
+    auto features = preprocess_audio(audio.samples, audio_cfg);
     if (use_gpu)
         features = features.gpu();
 

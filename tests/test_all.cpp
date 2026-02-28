@@ -5,6 +5,7 @@
 #include <axiom/io/safetensors.hpp>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 
 using namespace parakeet;
 using namespace axiom;
@@ -476,7 +477,7 @@ TEST(Tokenizer, DecodeOutOfRange) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  WAV Reader
+//  WAV Reader (legacy)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 TEST(WavReader, ReadTestAudio) {
@@ -498,6 +499,273 @@ TEST(WavReader, ReadTestWav) {
     auto wav = read_wav(path);
     EXPECT_EQ(wav.sample_rate, 16000);
     EXPECT_GT(wav.num_samples, 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Audio I/O: Format Detection
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(AudioIO, DetectFormatByExtensionWAV) {
+    EXPECT_EQ(detect_format_by_extension("test.wav"), AudioFormat::WAV);
+    EXPECT_EQ(detect_format_by_extension("test.WAVE"), AudioFormat::WAV);
+}
+
+TEST(AudioIO, DetectFormatByExtensionFLAC) {
+    EXPECT_EQ(detect_format_by_extension("test.flac"), AudioFormat::FLAC);
+}
+
+TEST(AudioIO, DetectFormatByExtensionMP3) {
+    EXPECT_EQ(detect_format_by_extension("test.mp3"), AudioFormat::MP3);
+}
+
+TEST(AudioIO, DetectFormatByExtensionOGG) {
+    EXPECT_EQ(detect_format_by_extension("test.ogg"), AudioFormat::OGG);
+    EXPECT_EQ(detect_format_by_extension("test.oga"), AudioFormat::OGG);
+}
+
+TEST(AudioIO, DetectFormatByExtensionUnknown) {
+    EXPECT_EQ(detect_format_by_extension("test.txt"), AudioFormat::Unknown);
+    EXPECT_EQ(detect_format_by_extension("noext"), AudioFormat::Unknown);
+}
+
+TEST(AudioIO, DetectFormatByMagicWAV) {
+    // RIFF....WAVE
+    uint8_t wav_header[] = {'R', 'I', 'F', 'F', 0, 0, 0, 0,
+                             'W', 'A', 'V', 'E'};
+    EXPECT_EQ(detect_format_by_magic(wav_header, sizeof(wav_header)),
+              AudioFormat::WAV);
+}
+
+TEST(AudioIO, DetectFormatByMagicFLAC) {
+    uint8_t flac_header[] = {'f', 'L', 'a', 'C'};
+    EXPECT_EQ(detect_format_by_magic(flac_header, sizeof(flac_header)),
+              AudioFormat::FLAC);
+}
+
+TEST(AudioIO, DetectFormatByMagicMP3ID3) {
+    uint8_t mp3_header[] = {'I', 'D', '3'};
+    EXPECT_EQ(detect_format_by_magic(mp3_header, sizeof(mp3_header)),
+              AudioFormat::MP3);
+}
+
+TEST(AudioIO, DetectFormatByMagicMP3Sync) {
+    uint8_t mp3_header[] = {0xFF, 0xFB};
+    EXPECT_EQ(detect_format_by_magic(mp3_header, sizeof(mp3_header)),
+              AudioFormat::MP3);
+}
+
+TEST(AudioIO, DetectFormatByMagicOGG) {
+    uint8_t ogg_header[] = {'O', 'g', 'g', 'S'};
+    EXPECT_EQ(detect_format_by_magic(ogg_header, sizeof(ogg_header)),
+              AudioFormat::OGG);
+}
+
+TEST(AudioIO, DetectFormatByMagicUnknown) {
+    uint8_t garbage[] = {0x00, 0x01, 0x02, 0x03};
+    EXPECT_EQ(detect_format_by_magic(garbage, sizeof(garbage)),
+              AudioFormat::Unknown);
+}
+
+TEST(AudioIO, DetectFormatByMagicTooShort) {
+    uint8_t tiny[] = {0x00};
+    EXPECT_EQ(detect_format_by_magic(tiny, 1), AudioFormat::Unknown);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Audio I/O: Resampler
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(AudioIO, ResampleIdentity) {
+    // Same rate should return same data
+    std::vector<float> data(1000, 0.5f);
+    auto tensor = Tensor::from_data(data.data(), Shape{data.size()}, true);
+    auto result = resample(tensor, 16000, 16000);
+    EXPECT_EQ(result.shape()[0], tensor.shape()[0]);
+}
+
+TEST(AudioIO, ResampleDurationPreservation44to16) {
+    // 1 second of audio at 44100Hz → should produce ~1 second at 16000Hz
+    size_t src_len = 44100;
+    std::vector<float> data(src_len, 0.0f);
+    // Add a simple sine wave
+    for (size_t i = 0; i < src_len; ++i) {
+        data[i] = std::sin(2.0f * M_PI * 440.0f * i / 44100.0f);
+    }
+    auto tensor = Tensor::from_data(data.data(), Shape{src_len}, true);
+    auto result = resample(tensor, 44100, 16000);
+
+    // Duration should be preserved within tolerance
+    float src_duration = static_cast<float>(src_len) / 44100.0f;
+    float dst_duration =
+        static_cast<float>(result.shape()[0]) / 16000.0f;
+    EXPECT_NEAR(src_duration, dst_duration, 0.01f);
+}
+
+TEST(AudioIO, ResampleDurationPreservation48to16) {
+    size_t src_len = 48000;
+    std::vector<float> data(src_len, 0.0f);
+    for (size_t i = 0; i < src_len; ++i) {
+        data[i] = std::sin(2.0f * M_PI * 440.0f * i / 48000.0f);
+    }
+    auto tensor = Tensor::from_data(data.data(), Shape{src_len}, true);
+    auto result = resample(tensor, 48000, 16000);
+
+    float src_duration = static_cast<float>(src_len) / 48000.0f;
+    float dst_duration =
+        static_cast<float>(result.shape()[0]) / 16000.0f;
+    EXPECT_NEAR(src_duration, dst_duration, 0.01f);
+}
+
+TEST(AudioIO, ResampleSineWaveIntegrity) {
+    // Resample a 440Hz sine from 44100 to 16000
+    // The sine should still be detectable after resampling
+    size_t src_len = 44100;
+    std::vector<float> data(src_len);
+    for (size_t i = 0; i < src_len; ++i) {
+        data[i] = std::sin(2.0f * M_PI * 440.0f * i / 44100.0f);
+    }
+    auto tensor = Tensor::from_data(data.data(), Shape{src_len}, true);
+    auto result = resample(tensor, 44100, 16000);
+    auto cont = result.ascontiguousarray();
+    const float *out = cont.typed_data<float>();
+    size_t out_len = cont.shape()[0];
+
+    // Check that values are in reasonable range (not clipped or zeroed)
+    float max_val = 0.0f;
+    for (size_t i = 0; i < out_len; ++i) {
+        max_val = std::max(max_val, std::abs(out[i]));
+    }
+    EXPECT_GT(max_val, 0.8f);  // sine peak should be close to 1.0
+    EXPECT_LE(max_val, 1.05f); // no significant overshoot
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Audio I/O: WAV Loading via read_audio
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(AudioIO, ReadAudioWAV) {
+    if (!has_test_audio())
+        GTEST_SKIP() << "test audio not found";
+
+    auto audio = read_audio(model_path("2086-149220-0033.wav"));
+    EXPECT_EQ(audio.sample_rate, 16000);
+    EXPECT_EQ(audio.original_sample_rate, 16000);
+    EXPECT_EQ(audio.format, AudioFormat::WAV);
+    EXPECT_GT(audio.num_samples, 0);
+    EXPECT_GT(audio.duration, 0.0f);
+    EXPECT_EQ(audio.samples.shape()[0], static_cast<size_t>(audio.num_samples));
+}
+
+TEST(AudioIO, ReadAudioMatchesReadWav) {
+    if (!has_test_audio())
+        GTEST_SKIP() << "test audio not found";
+
+    auto wav = read_wav(model_path("2086-149220-0033.wav"));
+    auto audio = read_audio(model_path("2086-149220-0033.wav"));
+
+    EXPECT_EQ(wav.sample_rate, audio.sample_rate);
+    EXPECT_EQ(wav.num_samples, audio.num_samples);
+    EXPECT_EQ(wav.num_channels, audio.num_channels);
+
+    // Compare sample data
+    auto wav_cont = wav.samples.ascontiguousarray();
+    auto audio_cont = audio.samples.ascontiguousarray();
+    const float *wav_data = wav_cont.typed_data<float>();
+    const float *audio_data = audio_cont.typed_data<float>();
+    float max_diff = 0.0f;
+    for (int i = 0; i < wav.num_samples; ++i) {
+        max_diff = std::max(max_diff, std::abs(wav_data[i] - audio_data[i]));
+    }
+    EXPECT_LT(max_diff, 1e-5f);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Audio I/O: Memory Buffer
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(AudioIO, ReadAudioRawFloat32) {
+    // Create raw float32 PCM and read it back
+    std::vector<float> pcm(16000, 0.5f); // 1 second at 16kHz
+    auto audio = read_audio(pcm.data(), pcm.size(), 16000);
+    EXPECT_EQ(audio.sample_rate, 16000);
+    EXPECT_EQ(audio.num_samples, 16000);
+    EXPECT_NEAR(audio.duration, 1.0f, 0.001f);
+}
+
+TEST(AudioIO, ReadAudioRawFloat32Resample) {
+    // 1 second at 44100Hz should resample to ~16000 samples
+    std::vector<float> pcm(44100, 0.5f);
+    auto audio = read_audio(pcm.data(), pcm.size(), 44100);
+    EXPECT_EQ(audio.sample_rate, 16000);
+    EXPECT_NEAR(audio.duration, 1.0f, 0.01f);
+    // Output should be approximately 16000 samples
+    float ratio = static_cast<float>(audio.num_samples) / 16000.0f;
+    EXPECT_NEAR(ratio, 1.0f, 0.01f);
+}
+
+TEST(AudioIO, ReadAudioRawInt16) {
+    // Create raw int16 PCM
+    std::vector<int16_t> pcm(16000);
+    for (size_t i = 0; i < pcm.size(); ++i) {
+        pcm[i] = static_cast<int16_t>(16384); // 0.5 in float
+    }
+    auto audio = read_audio(pcm.data(), pcm.size(), 16000);
+    EXPECT_EQ(audio.sample_rate, 16000);
+    EXPECT_EQ(audio.num_samples, 16000);
+
+    // Verify conversion: int16 16384 / 32768 = 0.5
+    auto cont = audio.samples.ascontiguousarray();
+    const float *data = cont.typed_data<float>();
+    EXPECT_NEAR(data[0], 0.5f, 0.001f);
+}
+
+TEST(AudioIO, ReadAudioMemoryBufferWAV) {
+    if (!has_test_audio())
+        GTEST_SKIP() << "test audio not found";
+
+    // Read file into memory, then decode from buffer
+    auto path = model_path("2086-149220-0033.wav");
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    size_t size = file.tellg();
+    file.seekg(0);
+    std::vector<uint8_t> buffer(size);
+    file.read(reinterpret_cast<char *>(buffer.data()), size);
+
+    auto audio = read_audio(buffer.data(), buffer.size());
+    EXPECT_EQ(audio.format, AudioFormat::WAV);
+    EXPECT_EQ(audio.sample_rate, 16000);
+    EXPECT_GT(audio.num_samples, 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Audio I/O: Duration Query
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(AudioIO, DurationQuery) {
+    if (!has_test_audio())
+        GTEST_SKIP() << "test audio not found";
+
+    float duration = get_audio_duration(model_path("2086-149220-0033.wav"));
+    auto audio = read_audio(model_path("2086-149220-0033.wav"));
+    EXPECT_NEAR(duration, audio.duration, 0.01f);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Audio I/O: preprocess_audio(AudioData) overload
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(AudioIO, PreprocessAudioData) {
+    if (!has_test_audio())
+        GTEST_SKIP() << "test audio not found";
+
+    auto audio = read_audio(model_path("2086-149220-0033.wav"));
+    auto features = preprocess_audio(audio);
+
+    auto shape = features.shape();
+    EXPECT_EQ(shape.size(), 3u);
+    EXPECT_EQ(shape[0], 1u);
+    EXPECT_GT(shape[1], 0u);
+    EXPECT_EQ(shape[2], 80u);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
