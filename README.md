@@ -144,13 +144,21 @@ parakeet::DiarizedTranscriber dt("model.safetensors", "sortformer.safetensors",
 dt.to_gpu();  // optional
 
 auto result = dt.transcribe("meeting.wav");
+```
+
+Consecutive words from the same speaker are grouped automatically:
+```
+Speaker 0 [0.08s - 2.56s]: Good morning, how can I help you today?
+Speaker 1 [2.88s - 5.44s]: Hi, I'd like to check on my order status please.
+Speaker 0 [5.76s - 8.32s]: Sure, can you give me your order number?
+Speaker 1 [8.64s - 10.24s]: It's four five six seven eight.
+```
+
+Each `DiarizedWord` also carries individual timing and confidence:
+```cpp
 for (const auto &w : result.words) {
-    std::cout << "Speaker " << w.speaker_id << " [" << w.start << "s - "
-              << w.end << "s]: " << w.word << std::endl;
+    // w.speaker_id, w.start, w.end, w.confidence, w.word
 }
-// Speaker 0 [0.24s - 0.48s]: Well
-// Speaker 0 [0.48s - 0.56s]: I
-// Speaker 1 [2.40s - 2.80s]: Yeah
 ```
 
 Standalone alignment is also available if you run ASR and Sortformer separately:

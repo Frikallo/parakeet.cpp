@@ -547,26 +547,29 @@ static int run_diarized(const std::string &weights_path,
                      .count()
               << " ms" << std::endl;
 
-    // Print speaker-grouped output
+    // Print speaker-grouped output: merge consecutive runs of same speaker
     std::cout << "\n--- Diarized Transcription ---" << std::endl;
-    int current_speaker = -2; // sentinel
-    for (const auto &w : result.words) {
-        if (w.speaker_id != current_speaker) {
-            if (current_speaker != -2)
-                std::cout << std::endl;
-            if (w.speaker_id >= 0) {
-                std::cout << "Speaker " << w.speaker_id << ": ";
-            } else {
-                std::cout << "Unknown: ";
-            }
-            current_speaker = w.speaker_id;
-        } else {
-            std::cout << " ";
+    for (size_t i = 0; i < result.words.size();) {
+        int spk = result.words[i].speaker_id;
+        float run_start = result.words[i].start;
+        std::string run_text = result.words[i].word;
+        size_t j = i + 1;
+        while (j < result.words.size() &&
+               result.words[j].speaker_id == spk) {
+            run_text += " " + result.words[j].word;
+            ++j;
         }
-        std::cout << w.word;
+        float run_end = result.words[j - 1].end;
+
+        if (spk >= 0) {
+            std::cout << "Speaker " << spk;
+        } else {
+            std::cout << "Unknown";
+        }
+        std::cout << " [" << std::fixed << std::setprecision(2) << run_start
+                  << "s - " << run_end << "s]: " << run_text << std::endl;
+        i = j;
     }
-    if (!result.words.empty())
-        std::cout << std::endl;
 
     // Print detailed word list
     std::cout << "\n--- Diarized Words ---" << std::endl;
