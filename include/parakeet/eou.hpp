@@ -111,6 +111,21 @@ class StreamingTranscriber {
     // Returns any new text produced by this chunk.
     std::string transcribe_chunk(const Tensor &samples);
 
+    // Convenience: process raw float32 PCM buffer.
+    std::string transcribe_chunk(const float *data, size_t num_samples) {
+        auto t = Tensor::from_data(data, Shape{num_samples}, true);
+        return transcribe_chunk(t);
+    }
+
+    // Convenience: process raw int16 PCM buffer (converted to float32).
+    std::string transcribe_chunk(const int16_t *data, size_t num_samples) {
+        std::vector<float> f(num_samples);
+        for (size_t i = 0; i < num_samples; ++i)
+            f[i] = static_cast<float>(data[i]) / 32768.0f;
+        auto t = Tensor::from_data(f.data(), Shape{num_samples}, true);
+        return transcribe_chunk(t);
+    }
+
     // Reset state for a new utterance.
     void reset();
 

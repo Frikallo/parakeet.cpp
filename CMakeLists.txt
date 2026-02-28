@@ -34,8 +34,8 @@ add_library(parakeet_lib STATIC
     src/rnnt.cpp
     src/tdt.cpp
     src/tdt_ctc.cpp
-    src/wav.cpp
     src/audio.cpp
+    src/audio_io.cpp
     src/vocab.cpp
     src/timestamp.cpp
     src/streaming_encoder.cpp
@@ -46,6 +46,10 @@ add_library(parakeet_lib STATIC
 )
 target_link_libraries(parakeet_lib PUBLIC Axiom::axiom)
 target_include_directories(parakeet_lib PUBLIC include)
+target_include_directories(parakeet_lib PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/dr_libs
+    ${CMAKE_SOURCE_DIR}/third_party/stb
+)
 
 # Demo binary
 add_executable(parakeet src/main.cpp)

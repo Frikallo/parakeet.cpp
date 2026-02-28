@@ -97,8 +97,8 @@ Identify who spoke when — detects up to 4 speakers with per-frame activity pro
 parakeet::Sortformer model(parakeet::make_sortformer_117m_config());
 model.load_state_dict(axiom::io::safetensors::load("sortformer.safetensors"));
 
-auto wav = parakeet::read_wav("meeting.wav");
-auto features = parakeet::preprocess_audio(wav.samples, {.normalize = false});
+auto audio = parakeet::read_audio("meeting.wav");
+auto features = parakeet::preprocess_audio(audio.samples, {.normalize = false});
 auto segments = model.diarize(features);
 
 for (const auto &seg : segments) {
@@ -139,8 +139,8 @@ auto cfg = parakeet::make_110m_config();
 parakeet::ParakeetTDTCTC model(cfg);
 model.load_state_dict(axiom::io::safetensors::load("model.safetensors"));
 
-auto wav = parakeet::read_wav("audio.wav");
-auto features = parakeet::preprocess_audio(wav.samples);
+auto audio = parakeet::read_audio("audio.wav");
+auto features = parakeet::preprocess_audio(audio.samples);
 auto encoder_out = model.encoder()(features);
 
 auto log_probs = model.ctc_decoder()(encoder_out);
@@ -384,11 +384,11 @@ Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. Al
 
 ### Audio & I/O
 
-- [ ] **Multi-format audio loading** — MP3 (minimp3), FLAC (dr_flac), Opus (opusfile), OGG Vorbis (stb_vorbis), M4A/AAC. Header-only C libraries, no external deps. Unified `read_audio(path)` replaces `read_wav()`.
-- [ ] **Automatic resampling** — Detect source sample rate and resample to 16kHz. Sinc interpolation (libsamplerate) or polyphase FIR. Currently 44.1/48kHz input silently produces garbage.
-- [ ] **Sample rate validation** — `preprocess_audio()` should check and reject non-16kHz input (or auto-resample) instead of silently computing wrong features.
-- [ ] **Load from memory buffer** — `read_audio(const uint8_t* data, size_t len)` and `read_audio(std::span<const float> pcm, int sample_rate)` for in-process use without temp files.
-- [ ] **Extended WAV support** — 24-bit PCM, 8-bit unsigned, A-law/mu-law (common in telephony).
+- [x] **Multi-format audio loading** — WAV (all formats), FLAC, MP3, OGG Vorbis via dr_libs + stb_vorbis. `read_audio(path)` auto-detects format.
+- [x] **Automatic resampling** — Windowed sinc interpolation (Kaiser, 16-tap, ~80dB stopband). Arbitrary rate conversion with GCD simplification.
+- [x] **Sample rate validation** — `preprocess_audio(AudioData)` validates sample rate matches config.
+- [x] **Load from memory buffer** — `read_audio(bytes, len)`, `read_audio(float*, n, rate)`, `read_audio(int16_t*, n, rate)`.
+- [x] **Extended WAV support** — All WAV formats via dr_wav (8/16/24/32-bit PCM, float, A-law, mu-law).
 - [ ] **Audio duration query** — `get_audio_duration(path)` without fully decoding the file. Read header only.
 - [ ] **Progress callbacks** — `transcribe(path, {.on_progress = callback})` for long files. Report preprocessing / encoder / decode stages.
 - [ ] **Streaming from raw PCM** — Helper to feed `int16_t*` or `float*` microphone buffers directly into `StreamingTranscriber` without manual Tensor construction.
