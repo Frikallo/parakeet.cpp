@@ -14,7 +14,6 @@
 #include "parakeet/tdt_ctc.hpp"
 #include "parakeet/timestamp.hpp"
 #include "parakeet/vocab.hpp"
-#include "parakeet/wav.hpp"
 
 namespace parakeet {
 

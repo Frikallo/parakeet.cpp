@@ -19,4 +19,3 @@
 #include "parakeet/transcribe.hpp"
 #include "parakeet/transformer.hpp"
 #include "parakeet/vocab.hpp"
-#include "parakeet/wav.hpp"

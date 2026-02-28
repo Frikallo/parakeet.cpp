@@ -477,31 +477,6 @@ TEST(Tokenizer, DecodeOutOfRange) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  WAV Reader (legacy)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-TEST(WavReader, ReadTestAudio) {
-    if (!has_test_audio())
-        GTEST_SKIP() << "test audio not found";
-
-    auto wav = read_wav(model_path("2086-149220-0033.wav"));
-    EXPECT_EQ(wav.sample_rate, 16000);
-    EXPECT_EQ(wav.num_channels, 1);
-    EXPECT_GT(wav.num_samples, 0);
-    EXPECT_EQ(wav.samples.shape()[0], static_cast<size_t>(wav.num_samples));
-}
-
-TEST(WavReader, ReadTestWav) {
-    auto path = model_path("test.wav");
-    if (!std::filesystem::exists(path))
-        GTEST_SKIP() << "test.wav not found";
-
-    auto wav = read_wav(path);
-    EXPECT_EQ(wav.sample_rate, 16000);
-    EXPECT_GT(wav.num_samples, 0);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 //  Audio I/O: Format Detection
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -654,29 +629,6 @@ TEST(AudioIO, ReadAudioWAV) {
     EXPECT_GT(audio.num_samples, 0);
     EXPECT_GT(audio.duration, 0.0f);
     EXPECT_EQ(audio.samples.shape()[0], static_cast<size_t>(audio.num_samples));
-}
-
-TEST(AudioIO, ReadAudioMatchesReadWav) {
-    if (!has_test_audio())
-        GTEST_SKIP() << "test audio not found";
-
-    auto wav = read_wav(model_path("2086-149220-0033.wav"));
-    auto audio = read_audio(model_path("2086-149220-0033.wav"));
-
-    EXPECT_EQ(wav.sample_rate, audio.sample_rate);
-    EXPECT_EQ(wav.num_samples, audio.num_samples);
-    EXPECT_EQ(wav.num_channels, audio.num_channels);
-
-    // Compare sample data
-    auto wav_cont = wav.samples.ascontiguousarray();
-    auto audio_cont = audio.samples.ascontiguousarray();
-    const float *wav_data = wav_cont.typed_data<float>();
-    const float *audio_data = audio_cont.typed_data<float>();
-    float max_diff = 0.0f;
-    for (int i = 0; i < wav.num_samples; ++i) {
-        max_diff = std::max(max_diff, std::abs(wav_data[i] - audio_data[i]));
-    }
-    EXPECT_LT(max_diff, 1e-5f);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
