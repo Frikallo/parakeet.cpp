@@ -221,15 +221,15 @@ Tensor ConvSubsampling::forward(const Tensor &input) const {
     auto x = input.unsqueeze(1); // (batch, 1, mel_length, mel_bins)
 
     x = conv1_(x);
-    x = ops::silu(x);
+    x = ops::relu(x);
 
     x = dw1_(x);
     x = conv2_(x);
-    x = ops::silu(x);
+    x = ops::relu(x);
 
     x = dw2_(x);
     x = conv3_(x);
-    x = ops::silu(x);
+    x = ops::relu(x);
 
     // Flatten channels and freq: (batch, C, T/8, F/8) → (batch, T/8, C*F/8)
     auto shape = x.shape();

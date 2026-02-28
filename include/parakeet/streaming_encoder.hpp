@@ -19,7 +19,7 @@ struct StreamingEncoderConfig : EncoderConfig {
     int att_context_left = 70; // left context frames for attention
     int att_context_right = 0; // right context frames (0 = causal)
     int chunk_size = 20;       // frames per chunk after subsampling
-    SubsamplingActivation subsampling_activation = SubsamplingActivation::SiLU;
+    SubsamplingActivation subsampling_activation = SubsamplingActivation::ReLU;
     bool xscaling = false; // multiply subsampling output by sqrt(d_model)
 };
 

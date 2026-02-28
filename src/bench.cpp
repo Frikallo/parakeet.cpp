@@ -50,10 +50,10 @@ static int parse_audio_sec(const std::string &name) {
     if (first_slash == std::string::npos)
         return 0;
     auto second_slash = name.find('/', first_slash + 1);
-    std::string arg_str = (second_slash != std::string::npos)
-                              ? name.substr(first_slash + 1,
-                                            second_slash - first_slash - 1)
-                              : name.substr(first_slash + 1);
+    std::string arg_str =
+        (second_slash != std::string::npos)
+            ? name.substr(first_slash + 1, second_slash - first_slash - 1)
+            : name.substr(first_slash + 1);
     try {
         return std::stoi(arg_str);
     } catch (...) {
@@ -65,7 +65,8 @@ static int parse_audio_sec(const std::string &name) {
 static std::pair<std::string, std::string>
 parse_model_device(const std::string &name) {
     auto slash = name.find('/');
-    std::string prefix = (slash != std::string::npos) ? name.substr(0, slash) : name;
+    std::string prefix =
+        (slash != std::string::npos) ? name.substr(0, slash) : name;
     auto underscore = prefix.rfind('_');
     if (underscore != std::string::npos)
         return {prefix.substr(0, underscore), prefix.substr(underscore + 1)};
@@ -88,10 +89,10 @@ class MarkdownReporter : public benchmark::BenchmarkReporter {
         if (runs_.empty())
             return;
 
-        std::cout
-            << "| Model | Device | Audio (s) | Time (ms) | RTF | Throughput |\n";
-        std::cout
-            << "|-------|--------|-----------|-----------|-----|------------|\n";
+        std::cout << "| Model | Device | Audio (s) | Time (ms) | RTF | "
+                     "Throughput |\n";
+        std::cout << "|-------|--------|-----------|-----------|-----|---------"
+                     "---|\n";
 
         for (const auto &r : runs_) {
             if (r.skipped != benchmark::internal::NotSkipped)
@@ -99,17 +100,14 @@ class MarkdownReporter : public benchmark::BenchmarkReporter {
 
             auto [model, device] = parse_model_device(r.benchmark_name());
             int audio_sec = parse_audio_sec(r.benchmark_name());
-            double time_ms =
-                r.real_accumulated_time / static_cast<double>(r.iterations) *
-                1000.0;
-            double rtf =
-                audio_sec > 0 ? (time_ms / 1000.0) / audio_sec : 0;
+            double time_ms = r.real_accumulated_time /
+                             static_cast<double>(r.iterations) * 1000.0;
+            double rtf = audio_sec > 0 ? (time_ms / 1000.0) / audio_sec : 0;
             double throughput = rtf > 0 ? 1.0 / rtf : 0;
 
-            std::cout << "| " << model << " | " << device << " | "
-                      << audio_sec << " | " << std::fixed
-                      << std::setprecision(1) << time_ms << " | "
-                      << std::setprecision(4) << rtf << " | "
+            std::cout << "| " << model << " | " << device << " | " << audio_sec
+                      << " | " << std::fixed << std::setprecision(1) << time_ms
+                      << " | " << std::setprecision(4) << rtf << " | "
                       << std::setprecision(0) << throughput << "x |\n";
         }
     }
@@ -173,8 +171,7 @@ static void register_benchmarks() {
         int mel = cfg.encoder.mel_bins;
 
         auto reg = [mel](bool gpu) {
-            std::string name =
-                std::string("110m_") + (gpu ? "GPU" : "CPU");
+            std::string name = std::string("110m_") + (gpu ? "GPU" : "CPU");
             add_duration_args(benchmark::RegisterBenchmark(
                 name, [gpu, mel](benchmark::State &state) {
                     auto &model = load_model(cache_110m, flag_110m,
@@ -194,8 +191,8 @@ static void register_benchmarks() {
                         materialize(out);
                     }
 
-                    state.counters["Throughput"] =
-                        benchmark::Counter(audio_sec, benchmark::Counter::kIsRate);
+                    state.counters["Throughput"] = benchmark::Counter(
+                        audio_sec, benchmark::Counter::kIsRate);
                 }));
         };
 
@@ -210,8 +207,7 @@ static void register_benchmarks() {
         int mel = cfg.encoder.mel_bins;
 
         auto reg = [mel](bool gpu) {
-            std::string name =
-                std::string("tdt-600m_") + (gpu ? "GPU" : "CPU");
+            std::string name = std::string("tdt-600m_") + (gpu ? "GPU" : "CPU");
             add_duration_args(benchmark::RegisterBenchmark(
                 name, [gpu, mel](benchmark::State &state) {
                     auto &model =
@@ -231,8 +227,8 @@ static void register_benchmarks() {
                         materialize(out);
                     }
 
-                    state.counters["Throughput"] =
-                        benchmark::Counter(audio_sec, benchmark::Counter::kIsRate);
+                    state.counters["Throughput"] = benchmark::Counter(
+                        audio_sec, benchmark::Counter::kIsRate);
                 }));
         };
 
@@ -268,8 +264,8 @@ static void register_benchmarks() {
                         materialize(out);
                     }
 
-                    state.counters["Throughput"] =
-                        benchmark::Counter(audio_sec, benchmark::Counter::kIsRate);
+                    state.counters["Throughput"] = benchmark::Counter(
+                        audio_sec, benchmark::Counter::kIsRate);
                 }));
         };
 
@@ -305,8 +301,8 @@ static void register_benchmarks() {
                         materialize(out);
                     }
 
-                    state.counters["Throughput"] =
-                        benchmark::Counter(audio_sec, benchmark::Counter::kIsRate);
+                    state.counters["Throughput"] = benchmark::Counter(
+                        audio_sec, benchmark::Counter::kIsRate);
                 }));
         };
 
@@ -323,21 +319,20 @@ int main(int argc, char **argv) {
 
     if (flag_110m.empty() && flag_tdt_600m.empty() && flag_rnnt_600m.empty() &&
         flag_sortformer.empty()) {
-        std::cerr
-            << "Usage: parakeet_bench [options] [benchmark flags]\n\n"
-            << "Model flags (at least one required):\n"
-            << "  --110m=PATH         110M TDT-CTC model weights\n"
-            << "  --tdt-600m=PATH     600M TDT model weights\n"
-            << "  --rnnt-600m=PATH    600M RNNT model weights\n"
-            << "  --sortformer=PATH   Sortformer model weights\n"
-            << "\nOptions:\n"
-            << "  --no-gpu            Skip GPU benchmarks\n"
-            << "  --markdown          Output as markdown table\n"
-            << "\nGoogle Benchmark flags (passed through):\n"
-            << "  --benchmark_filter=REGEX\n"
-            << "  --benchmark_repetitions=N\n"
-            << "  --benchmark_format={console|json|csv}\n"
-            << std::endl;
+        std::cerr << "Usage: parakeet_bench [options] [benchmark flags]\n\n"
+                  << "Model flags (at least one required):\n"
+                  << "  --110m=PATH         110M TDT-CTC model weights\n"
+                  << "  --tdt-600m=PATH     600M TDT model weights\n"
+                  << "  --rnnt-600m=PATH    600M RNNT model weights\n"
+                  << "  --sortformer=PATH   Sortformer model weights\n"
+                  << "\nOptions:\n"
+                  << "  --no-gpu            Skip GPU benchmarks\n"
+                  << "  --markdown          Output as markdown table\n"
+                  << "\nGoogle Benchmark flags (passed through):\n"
+                  << "  --benchmark_filter=REGEX\n"
+                  << "  --benchmark_repetitions=N\n"
+                  << "  --benchmark_format={console|json|csv}\n"
+                  << std::endl;
         return 1;
     }
 
