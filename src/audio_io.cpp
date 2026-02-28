@@ -8,9 +8,9 @@
 #define DR_FLAC_IMPLEMENTATION
 #define DR_MP3_IMPLEMENTATION
 
-#include "dr_wav.h"
 #include "dr_flac.h"
 #include "dr_mp3.h"
+#include "dr_wav.h"
 
 // stb_vorbis is a .c file — include as extern "C", then clean up leaked macros
 extern "C" {
@@ -59,7 +59,8 @@ AudioFormat detect_format_by_magic(const uint8_t *data, size_t len) {
     if (len < 2)
         return AudioFormat::Unknown;
 
-    // MP3: frame sync (0xFF 0xFB/0xFA/0xF3/0xF2/0xE0-0xFF) — check early (2 bytes)
+    // MP3: frame sync (0xFF 0xFB/0xFA/0xF3/0xF2/0xE0-0xFF) — check early (2
+    // bytes)
     if (data[0] == 0xFF && (data[1] & 0xE0) == 0xE0) {
         return AudioFormat::MP3;
     }
@@ -74,20 +75,18 @@ AudioFormat detect_format_by_magic(const uint8_t *data, size_t len) {
 
     // RIFF....WAVE
     if (len >= 12 && data[0] == 'R' && data[1] == 'I' && data[2] == 'F' &&
-        data[3] == 'F' && data[8] == 'W' && data[9] == 'A' &&
-        data[10] == 'V' && data[11] == 'E') {
+        data[3] == 'F' && data[8] == 'W' && data[9] == 'A' && data[10] == 'V' &&
+        data[11] == 'E') {
         return AudioFormat::WAV;
     }
 
     // fLaC
-    if (data[0] == 'f' && data[1] == 'L' && data[2] == 'a' &&
-        data[3] == 'C') {
+    if (data[0] == 'f' && data[1] == 'L' && data[2] == 'a' && data[3] == 'C') {
         return AudioFormat::FLAC;
     }
 
     // OGG: OggS
-    if (data[0] == 'O' && data[1] == 'g' && data[2] == 'g' &&
-        data[3] == 'S') {
+    if (data[0] == 'O' && data[1] == 'g' && data[2] == 'g' && data[3] == 'S') {
         return AudioFormat::OGG;
     }
 
@@ -122,7 +121,7 @@ double kaiser_window(double n, double N, double beta) {
 
 // Windowed sinc interpolation
 std::vector<float> sinc_resample(const float *input, size_t input_len,
-                                  int src_rate, int dst_rate) {
+                                 int src_rate, int dst_rate) {
     if (src_rate == dst_rate) {
         return std::vector<float>(input, input + input_len);
     }
@@ -132,9 +131,8 @@ std::vector<float> sinc_resample(const float *input, size_t input_len,
     int up = dst_rate / g;
     int down = src_rate / g;
 
-    size_t output_len =
-        static_cast<size_t>((static_cast<int64_t>(input_len) * up + down - 1) /
-                            down);
+    size_t output_len = static_cast<size_t>(
+        (static_cast<int64_t>(input_len) * up + down - 1) / down);
     std::vector<float> output(output_len);
 
     // Kaiser window parameters: 80dB stopband, 16-tap half-width
@@ -198,7 +196,7 @@ std::vector<float> sinc_resample(const float *input, size_t input_len,
 
 // Downmix interleaved multi-channel to mono
 std::vector<float> downmix_to_mono(const float *interleaved, size_t total,
-                                    int channels) {
+                                   int channels) {
     if (channels == 1) {
         return std::vector<float>(interleaved, interleaved + total);
     }
@@ -217,8 +215,8 @@ std::vector<float> downmix_to_mono(const float *interleaved, size_t total,
 
 // Build AudioData from decoded mono samples
 AudioData make_audio_data(std::vector<float> &&mono, int src_rate,
-                           int target_rate, int original_channels,
-                           AudioFormat fmt) {
+                          int target_rate, int original_channels,
+                          AudioFormat fmt) {
     int original_rate = src_rate;
     int num_mono = static_cast<int>(mono.size());
 
@@ -236,17 +234,12 @@ AudioData make_audio_data(std::vector<float> &&mono, int src_rate,
         static_cast<float>(num_mono) / static_cast<float>(original_rate);
 
     auto tensor = axiom::Tensor::from_data(
-        final_samples.data(),
-        axiom::Shape{static_cast<size_t>(num_samples)}, true);
+        final_samples.data(), axiom::Shape{static_cast<size_t>(num_samples)},
+        true);
 
     return AudioData{
-        std::move(tensor),
-        target_rate,
-        original_rate,
-        original_channels,
-        num_samples,
-        duration,
-        fmt,
+        std::move(tensor), target_rate, original_rate, original_channels,
+        num_samples,       duration,    fmt,
     };
 }
 
@@ -255,7 +248,7 @@ AudioData make_audio_data(std::vector<float> &&mono, int src_rate,
 // ─── Public Resampler ────────────────────────────────────────────────────────
 
 axiom::Tensor resample(const axiom::Tensor &samples, int src_rate,
-                        int dst_rate) {
+                       int dst_rate) {
     if (src_rate == dst_rate)
         return samples;
 
@@ -264,8 +257,8 @@ axiom::Tensor resample(const axiom::Tensor &samples, int src_rate,
     size_t len = cont.shape()[0];
 
     auto resampled = sinc_resample(data, len, src_rate, dst_rate);
-    return axiom::Tensor::from_data(
-        resampled.data(), axiom::Shape{resampled.size()}, true);
+    return axiom::Tensor::from_data(resampled.data(),
+                                    axiom::Shape{resampled.size()}, true);
 }
 
 // ─── Per-Format Decoders ─────────────────────────────────────────────────────
@@ -293,13 +286,13 @@ AudioData read_wav_dr(const std::string &path, int target_rate) {
     }
     interleaved.resize(frames_read * channels);
 
-    auto mono = downmix_to_mono(interleaved.data(), interleaved.size(), channels);
+    auto mono =
+        downmix_to_mono(interleaved.data(), interleaved.size(), channels);
     return make_audio_data(std::move(mono), sample_rate, target_rate, channels,
-                            AudioFormat::WAV);
+                           AudioFormat::WAV);
 }
 
-AudioData read_wav_dr_memory(const uint8_t *data, size_t len,
-                              int target_rate) {
+AudioData read_wav_dr_memory(const uint8_t *data, size_t len, int target_rate) {
     drwav wav;
     if (!drwav_init_memory(&wav, data, len, nullptr)) {
         throw std::runtime_error("Cannot decode WAV from memory buffer");
@@ -319,9 +312,10 @@ AudioData read_wav_dr_memory(const uint8_t *data, size_t len,
     }
     interleaved.resize(frames_read * channels);
 
-    auto mono = downmix_to_mono(interleaved.data(), interleaved.size(), channels);
+    auto mono =
+        downmix_to_mono(interleaved.data(), interleaved.size(), channels);
     return make_audio_data(std::move(mono), sample_rate, target_rate, channels,
-                            AudioFormat::WAV);
+                           AudioFormat::WAV);
 }
 
 // FLAC via dr_flac
@@ -336,16 +330,16 @@ AudioData read_flac_dr(const std::string &path, int target_rate) {
     }
 
     auto mono = downmix_to_mono(interleaved, total_frames * channels,
-                                 static_cast<int>(channels));
+                                static_cast<int>(channels));
     drflac_free(interleaved, nullptr);
 
     return make_audio_data(std::move(mono), static_cast<int>(sample_rate),
-                            target_rate, static_cast<int>(channels),
-                            AudioFormat::FLAC);
+                           target_rate, static_cast<int>(channels),
+                           AudioFormat::FLAC);
 }
 
 AudioData read_flac_dr_memory(const uint8_t *data, size_t len,
-                               int target_rate) {
+                              int target_rate) {
     unsigned int channels, sample_rate;
     drflac_uint64 total_frames;
     float *interleaved = drflac_open_memory_and_read_pcm_frames_f32(
@@ -356,12 +350,12 @@ AudioData read_flac_dr_memory(const uint8_t *data, size_t len,
     }
 
     auto mono = downmix_to_mono(interleaved, total_frames * channels,
-                                 static_cast<int>(channels));
+                                static_cast<int>(channels));
     drflac_free(interleaved, nullptr);
 
     return make_audio_data(std::move(mono), static_cast<int>(sample_rate),
-                            target_rate, static_cast<int>(channels),
-                            AudioFormat::FLAC);
+                           target_rate, static_cast<int>(channels),
+                           AudioFormat::FLAC);
 }
 
 // MP3 via dr_mp3
@@ -382,11 +376,10 @@ AudioData read_mp3_dr(const std::string &path, int target_rate) {
     drmp3_free(interleaved, nullptr);
 
     return make_audio_data(std::move(mono), sample_rate, target_rate, channels,
-                            AudioFormat::MP3);
+                           AudioFormat::MP3);
 }
 
-AudioData read_mp3_dr_memory(const uint8_t *data, size_t len,
-                              int target_rate) {
+AudioData read_mp3_dr_memory(const uint8_t *data, size_t len, int target_rate) {
     drmp3_config config;
     drmp3_uint64 total_frames;
     float *interleaved = drmp3_open_memory_and_read_pcm_frames_f32(
@@ -403,16 +396,15 @@ AudioData read_mp3_dr_memory(const uint8_t *data, size_t len,
     drmp3_free(interleaved, nullptr);
 
     return make_audio_data(std::move(mono), sample_rate, target_rate, channels,
-                            AudioFormat::MP3);
+                           AudioFormat::MP3);
 }
 
 // OGG Vorbis via stb_vorbis
 AudioData read_ogg_stb(const std::string &path, int target_rate) {
     int channels, sample_rate;
     short *raw_data;
-    int total_samples =
-        stb_vorbis_decode_filename(path.c_str(), &channels, &sample_rate,
-                                    &raw_data);
+    int total_samples = stb_vorbis_decode_filename(path.c_str(), &channels,
+                                                   &sample_rate, &raw_data);
     if (total_samples < 0) {
         throw std::runtime_error("Cannot open OGG file: " + path);
     }
@@ -425,18 +417,18 @@ AudioData read_ogg_stb(const std::string &path, int target_rate) {
     }
     free(raw_data);
 
-    auto mono = downmix_to_mono(interleaved.data(), interleaved.size(), channels);
+    auto mono =
+        downmix_to_mono(interleaved.data(), interleaved.size(), channels);
     return make_audio_data(std::move(mono), sample_rate, target_rate, channels,
-                            AudioFormat::OGG);
+                           AudioFormat::OGG);
 }
 
 AudioData read_ogg_stb_memory(const uint8_t *data, size_t len,
-                               int target_rate) {
+                              int target_rate) {
     int channels, sample_rate;
     short *raw_data;
-    int total_samples =
-        stb_vorbis_decode_memory(data, static_cast<int>(len), &channels,
-                                  &sample_rate, &raw_data);
+    int total_samples = stb_vorbis_decode_memory(
+        data, static_cast<int>(len), &channels, &sample_rate, &raw_data);
     if (total_samples < 0) {
         throw std::runtime_error("Cannot decode OGG from memory buffer");
     }
@@ -448,9 +440,10 @@ AudioData read_ogg_stb_memory(const uint8_t *data, size_t len,
     }
     free(raw_data);
 
-    auto mono = downmix_to_mono(interleaved.data(), interleaved.size(), channels);
+    auto mono =
+        downmix_to_mono(interleaved.data(), interleaved.size(), channels);
     return make_audio_data(std::move(mono), sample_rate, target_rate, channels,
-                            AudioFormat::OGG);
+                           AudioFormat::OGG);
 }
 
 } // namespace
@@ -483,15 +476,14 @@ AudioData read_audio(const std::string &path, int target_sample_rate) {
     case AudioFormat::OGG:
         return read_ogg_stb(path, target_sample_rate);
     default:
-        throw std::runtime_error(
-            "Unsupported or unrecognized audio format: " + path);
+        throw std::runtime_error("Unsupported or unrecognized audio format: " +
+                                 path);
     }
 }
 
 // ─── Memory Buffer: Encoded Bytes ────────────────────────────────────────────
 
-AudioData read_audio(const uint8_t *data, size_t len,
-                      int target_sample_rate) {
+AudioData read_audio(const uint8_t *data, size_t len, int target_sample_rate) {
     auto fmt = detect_format_by_magic(data, len);
 
     switch (fmt) {
@@ -512,22 +504,22 @@ AudioData read_audio(const uint8_t *data, size_t len,
 // ─── Memory Buffer: Raw float32 PCM ──────────────────────────────────────────
 
 AudioData read_audio(const float *pcm, size_t num_samples, int sample_rate,
-                      int target_sample_rate) {
+                     int target_sample_rate) {
     std::vector<float> mono(pcm, pcm + num_samples);
     return make_audio_data(std::move(mono), sample_rate, target_sample_rate, 1,
-                            AudioFormat::Unknown);
+                           AudioFormat::Unknown);
 }
 
 // ─── Memory Buffer: Raw int16 PCM ────────────────────────────────────────────
 
 AudioData read_audio(const int16_t *pcm, size_t num_samples, int sample_rate,
-                      int target_sample_rate) {
+                     int target_sample_rate) {
     std::vector<float> mono(num_samples);
     for (size_t i = 0; i < num_samples; ++i) {
         mono[i] = static_cast<float>(pcm[i]) / 32768.0f;
     }
     return make_audio_data(std::move(mono), sample_rate, target_sample_rate, 1,
-                            AudioFormat::Unknown);
+                           AudioFormat::Unknown);
 }
 
 // ─── Duration Query ──────────────────────────────────────────────────────────
@@ -554,7 +546,7 @@ float get_audio_duration(const std::string &path) {
             throw std::runtime_error("Cannot open WAV file: " + path);
         }
         float duration = static_cast<float>(wav.totalPCMFrameCount) /
-                          static_cast<float>(wav.sampleRate);
+                         static_cast<float>(wav.sampleRate);
         drwav_uninit(&wav);
         return duration;
     }
@@ -564,7 +556,7 @@ float get_audio_duration(const std::string &path) {
             throw std::runtime_error("Cannot open FLAC file: " + path);
         }
         float duration = static_cast<float>(flac->totalPCMFrameCount) /
-                          static_cast<float>(flac->sampleRate);
+                         static_cast<float>(flac->sampleRate);
         drflac_close(flac);
         return duration;
     }
@@ -581,16 +573,15 @@ float get_audio_duration(const std::string &path) {
             throw std::runtime_error("Cannot open OGG file: " + path);
         }
         stb_vorbis_info info = stb_vorbis_get_info(v);
-        unsigned int total =
-            stb_vorbis_stream_length_in_samples(v);
+        unsigned int total = stb_vorbis_stream_length_in_samples(v);
         float duration =
             static_cast<float>(total) / static_cast<float>(info.sample_rate);
         stb_vorbis_close(v);
         return duration;
     }
     default:
-        throw std::runtime_error(
-            "Unsupported or unrecognized audio format: " + path);
+        throw std::runtime_error("Unsupported or unrecognized audio format: " +
+                                 path);
     }
 }
 

@@ -43,6 +43,7 @@ add_library(parakeet_lib STATIC
     src/nemotron.cpp
     src/transformer.cpp
     src/sortformer.cpp
+    src/diarize.cpp
 )
 target_link_libraries(parakeet_lib PUBLIC Axiom::axiom)
 target_include_directories(parakeet_lib PUBLIC include)

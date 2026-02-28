@@ -15,12 +15,15 @@ static void print_usage(const char *prog) {
         << "\nModel types:\n"
         << "  --model TYPE   Model type (default: tdt-ctc-110m)\n"
         << "                 Types: tdt-ctc-110m, tdt-600m, rnnt-600m,\n"
-        << "                        eou-120m, nemotron-600m, sortformer\n"
+        << "                        eou-120m, nemotron-600m, sortformer,\n"
+        << "                        diarized\n"
         << "\nDecoder options:\n"
         << "  --ctc          Use CTC decoder (default: TDT)\n"
         << "  --tdt          Use TDT decoder\n"
         << "\nOther options:\n"
         << "  --vocab PATH   SentencePiece vocab file for detokenization\n"
+        << "  --sortformer-weights PATH  Sortformer weights (for diarized "
+           "mode)\n"
         << "  --features PATH  Load pre-computed features from .npy file\n"
         << "  --gpu          Run on Metal GPU\n"
         << "  --timestamps   Show word-level timestamps\n"
@@ -487,6 +490,106 @@ static int run_sortformer(const std::string &weights_path,
     return 0;
 }
 
+// ─── Diarized Transcription mode ─────────────────────────────────────────────
+
+static int run_diarized(const std::string &weights_path,
+                        const std::string &audio_path,
+                        const std::string &vocab_path,
+                        const std::string &sortformer_weights_path,
+                        bool use_ctc, bool use_gpu) {
+    using namespace parakeet;
+    using Clock = std::chrono::high_resolution_clock;
+
+    if (sortformer_weights_path.empty()) {
+        std::cerr << "Error: --sortformer-weights required for diarized mode"
+                  << std::endl;
+        return 1;
+    }
+    if (vocab_path.empty()) {
+        std::cerr << "Error: --vocab required for diarized mode" << std::endl;
+        return 1;
+    }
+
+    std::cout << "Loading diarized transcriber (ASR + Sortformer)" << std::endl;
+    auto t0 = Clock::now();
+    DiarizedTranscriber dt(weights_path, sortformer_weights_path, vocab_path);
+    auto t1 = Clock::now();
+    std::cout << "Models loaded ("
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
+                     .count()
+              << " ms)" << std::endl;
+
+    if (use_gpu) {
+        t0 = Clock::now();
+        dt.to_gpu();
+        t1 = Clock::now();
+        std::cout << "Models moved to GPU ("
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(t1 -
+                                                                           t0)
+                         .count()
+                  << " ms)" << std::endl;
+    }
+
+    auto audio = read_audio(audio_path);
+    std::cout << "Audio: " << audio.original_sample_rate << "Hz"
+              << (audio.original_sample_rate != audio.sample_rate
+                      ? " -> " + std::to_string(audio.sample_rate) + "Hz"
+                      : "")
+              << ", " << audio.num_samples << " samples, " << std::fixed
+              << std::setprecision(1) << audio.duration << "s" << std::endl;
+
+    Decoder decoder = use_ctc ? Decoder::CTC : Decoder::TDT;
+    t0 = Clock::now();
+    auto result = dt.transcribe(audio.samples, decoder);
+    t1 = Clock::now();
+    std::cout << "Transcription + diarization: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
+                     .count()
+              << " ms" << std::endl;
+
+    // Print speaker-grouped output: merge consecutive runs of same speaker
+    std::cout << "\n--- Diarized Transcription ---" << std::endl;
+    for (size_t i = 0; i < result.words.size();) {
+        int spk = result.words[i].speaker_id;
+        float run_start = result.words[i].start;
+        std::string run_text = result.words[i].word;
+        size_t j = i + 1;
+        while (j < result.words.size() && result.words[j].speaker_id == spk) {
+            run_text += " " + result.words[j].word;
+            ++j;
+        }
+        float run_end = result.words[j - 1].end;
+
+        if (spk >= 0) {
+            std::cout << "Speaker " << spk;
+        } else {
+            std::cout << "Unknown";
+        }
+        std::cout << " [" << std::fixed << std::setprecision(2) << run_start
+                  << "s - " << run_end << "s]: " << run_text << std::endl;
+        i = j;
+    }
+
+    // Print detailed word list
+    std::cout << "\n--- Diarized Words ---" << std::endl;
+    for (const auto &w : result.words) {
+        std::cout << "  [" << std::fixed << std::setprecision(2) << w.start
+                  << "s - " << w.end << "s] (spk=" << w.speaker_id
+                  << ", conf=" << w.confidence << ") " << w.word << std::endl;
+    }
+
+    // Print speaker segments
+    std::cout << "\n--- Speaker Segments (" << result.segments.size()
+              << " segments) ---" << std::endl;
+    for (const auto &seg : result.segments) {
+        std::cout << "  Speaker " << seg.speaker_id << ": [" << std::fixed
+                  << std::setprecision(2) << seg.start << "s - " << seg.end
+                  << "s]" << std::endl;
+    }
+
+    return 0;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 int main(int argc, char *argv[]) {
@@ -506,6 +609,7 @@ int main(int argc, char *argv[]) {
         int latency_frames = 0;
         std::string vocab_path;
         std::string features_path;
+        std::string sortformer_weights_path;
 
         for (int i = 3; i < argc; ++i) {
             std::string arg = argv[i];
@@ -527,6 +631,8 @@ int main(int argc, char *argv[]) {
                 vocab_path = argv[++i];
             } else if (arg == "--features" && i + 1 < argc) {
                 features_path = argv[++i];
+            } else if (arg == "--sortformer-weights" && i + 1 < argc) {
+                sortformer_weights_path = argv[++i];
             } else {
                 std::cerr << "Unknown option: " << arg << std::endl;
                 print_usage(argv[0]);
@@ -558,6 +664,9 @@ int main(int argc, char *argv[]) {
                                           latency_frames);
         } else if (model_type == "sortformer") {
             return run_sortformer(weights_path, audio_path, use_gpu);
+        } else if (model_type == "diarized") {
+            return run_diarized(weights_path, audio_path, vocab_path,
+                                sortformer_weights_path, use_ctc, use_gpu);
         } else {
             std::cerr << "Unknown model type: " << model_type << std::endl;
             print_usage(argv[0]);

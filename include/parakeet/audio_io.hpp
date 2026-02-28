@@ -10,12 +10,12 @@ namespace parakeet {
 enum class AudioFormat { Unknown, WAV, FLAC, MP3, OGG };
 
 struct AudioData {
-    axiom::Tensor samples;  // float32, (num_samples,), mono, [-1,1]
-    int sample_rate;         // always target rate (16000) after read_audio
+    axiom::Tensor samples;    // float32, (num_samples,), mono, [-1,1]
+    int sample_rate;          // always target rate (16000) after read_audio
     int original_sample_rate; // source rate before resampling
-    int num_channels;        // original channel count before downmix
-    int num_samples;         // = samples.shape()[0]
-    float duration;          // seconds
+    int num_channels;         // original channel count before downmix
+    int num_samples;          // = samples.shape()[0]
+    float duration;           // seconds
     AudioFormat format;
 };
 
