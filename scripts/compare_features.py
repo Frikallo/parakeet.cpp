@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["torch", "torchaudio", "numpy"]
+# ///
 """Compare C++ and Python mel features with NeMo-compatible preprocessing."""
 import torch
 import torchaudio

@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["torch", "torchaudio", "numpy", "safetensors"]
+# ///
 """Compare C++ encoder output with PyTorch reference, layer by layer.
 Uses safetensors weights directly with PyTorch, no NeMo dependency.
 """

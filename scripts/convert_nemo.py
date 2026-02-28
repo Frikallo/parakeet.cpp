@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["torch", "safetensors", "packaging", "numpy"]
+# ///
 """Convert NeMo Parakeet checkpoints to safetensors for axiom.
 
 Supported models:
