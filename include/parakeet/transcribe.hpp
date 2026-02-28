@@ -10,6 +10,7 @@
 #include "parakeet/audio_io.hpp"
 #include "parakeet/config.hpp"
 #include "parakeet/ctc.hpp"
+#include "parakeet/phrase_boost.hpp"
 #include "parakeet/tdt.hpp"
 #include "parakeet/tdt_ctc.hpp"
 #include "parakeet/timestamp.hpp"
@@ -31,6 +32,15 @@ struct TranscribeResult {
 // ─── High-Level Transcription API ───────────────────────────────────────────
 
 enum class Decoder { CTC, TDT };
+
+// ─── Transcription Options ──────────────────────────────────────────────────
+
+struct TranscribeOptions {
+    Decoder decoder = Decoder::TDT;
+    bool timestamps = false;
+    std::vector<std::string> boost_phrases;
+    float boost_score = 5.0f;
+};
 
 /// Transcribe an audio file to text using a ParakeetTDTCTC model.
 /// Supports WAV, FLAC, MP3, OGG. Automatically resamples to 16kHz.
@@ -72,6 +82,22 @@ class Transcriber {
     TranscribeResult transcribe(const axiom::Tensor &samples,
                                 Decoder decoder = Decoder::TDT,
                                 bool timestamps = false) {
+        TranscribeOptions opts;
+        opts.decoder = decoder;
+        opts.timestamps = timestamps;
+        return transcribe(samples, opts);
+    }
+
+    /// Transcribe an audio file with options (boost phrases, etc.).
+    TranscribeResult transcribe(const std::string &audio_path,
+                                const TranscribeOptions &opts) {
+        auto audio = read_audio(audio_path);
+        return transcribe(audio.samples, opts);
+    }
+
+    /// Transcribe from raw float32 samples with options.
+    TranscribeResult transcribe(const axiom::Tensor &samples,
+                                const TranscribeOptions &opts) {
         AudioConfig audio_cfg;
         audio_cfg.n_mels = config_.encoder.mel_bins;
         auto features = preprocess_audio(samples, audio_cfg);
@@ -81,13 +107,23 @@ class Transcriber {
 
         auto encoder_out = model_.encoder()(features);
 
+        // Build trie if boost phrases provided
+        ContextTrie trie;
+        bool use_boost = !opts.boost_phrases.empty();
+        if (use_boost) {
+            trie.build(opts.boost_phrases, tokenizer_);
+        }
+
         TranscribeResult result;
 
-        if (timestamps) {
-            if (decoder == Decoder::CTC) {
+        if (opts.timestamps) {
+            if (opts.decoder == Decoder::CTC) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
-                auto all_ts =
-                    ctc_greedy_decode_with_timestamps(log_probs.cpu());
+                auto cpu_lp = log_probs.cpu();
+                auto all_ts = use_boost
+                                  ? ctc_greedy_decode_with_timestamps_boosted(
+                                        cpu_lp, trie, opts.boost_score)
+                                  : ctc_greedy_decode_with_timestamps(cpu_lp);
                 if (!all_ts.empty()) {
                     result.timestamped_tokens = all_ts[0];
                     for (const auto &t : result.timestamped_tokens) {
@@ -95,8 +131,12 @@ class Transcriber {
                     }
                 }
             } else {
-                auto all_ts = tdt_greedy_decode_with_timestamps(
-                    model_, encoder_out, config_.durations);
+                auto all_ts = use_boost
+                                  ? tdt_greedy_decode_with_timestamps_boosted(
+                                        model_, encoder_out, config_.durations,
+                                        trie, opts.boost_score)
+                                  : tdt_greedy_decode_with_timestamps(
+                                        model_, encoder_out, config_.durations);
                 if (!all_ts.empty()) {
                     result.timestamped_tokens = all_ts[0];
                     for (const auto &t : result.timestamped_tokens) {
@@ -112,12 +152,19 @@ class Transcriber {
             }
         } else {
             std::vector<std::vector<int>> all_tokens;
-            if (decoder == Decoder::CTC) {
+            if (opts.decoder == Decoder::CTC) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
-                all_tokens = ctc_greedy_decode(log_probs.cpu());
+                auto cpu_lp = log_probs.cpu();
+                all_tokens = use_boost ? ctc_greedy_decode_boosted(
+                                             cpu_lp, trie, opts.boost_score)
+                                       : ctc_greedy_decode(cpu_lp);
             } else {
-                all_tokens =
-                    tdt_greedy_decode(model_, encoder_out, config_.durations);
+                all_tokens = use_boost
+                                 ? tdt_greedy_decode_boosted(
+                                       model_, encoder_out, config_.durations,
+                                       trie, opts.boost_score)
+                                 : tdt_greedy_decode(model_, encoder_out,
+                                                     config_.durations);
             }
 
             if (!all_tokens.empty()) {
@@ -174,6 +221,20 @@ class TDTTranscriber {
 
     TranscribeResult transcribe(const axiom::Tensor &samples,
                                 bool timestamps = false) {
+        TranscribeOptions opts;
+        opts.decoder = Decoder::TDT;
+        opts.timestamps = timestamps;
+        return transcribe(samples, opts);
+    }
+
+    TranscribeResult transcribe(const std::string &audio_path,
+                                const TranscribeOptions &opts) {
+        auto audio = read_audio(audio_path);
+        return transcribe(audio.samples, opts);
+    }
+
+    TranscribeResult transcribe(const axiom::Tensor &samples,
+                                const TranscribeOptions &opts) {
         AudioConfig audio_cfg;
         audio_cfg.n_mels = config_.encoder.mel_bins;
         auto features = preprocess_audio(samples, audio_cfg);
@@ -183,11 +244,21 @@ class TDTTranscriber {
 
         auto encoder_out = model_.encoder()(features);
 
+        ContextTrie trie;
+        bool use_boost = !opts.boost_phrases.empty();
+        if (use_boost) {
+            trie.build(opts.boost_phrases, tokenizer_);
+        }
+
         TranscribeResult result;
 
-        if (timestamps) {
-            auto all_ts = tdt_greedy_decode_with_timestamps(model_, encoder_out,
-                                                            config_.durations);
+        if (opts.timestamps) {
+            auto all_ts = use_boost
+                              ? tdt_greedy_decode_with_timestamps_boosted(
+                                    model_, encoder_out, config_.durations,
+                                    trie, opts.boost_score)
+                              : tdt_greedy_decode_with_timestamps(
+                                    model_, encoder_out, config_.durations);
             if (!all_ts.empty()) {
                 result.timestamped_tokens = all_ts[0];
                 for (const auto &t : result.timestamped_tokens) {
@@ -201,7 +272,11 @@ class TDTTranscriber {
             }
         } else {
             auto all_tokens =
-                tdt_greedy_decode(model_, encoder_out, config_.durations);
+                use_boost
+                    ? tdt_greedy_decode_boosted(model_, encoder_out,
+                                                config_.durations, trie,
+                                                opts.boost_score)
+                    : tdt_greedy_decode(model_, encoder_out, config_.durations);
             if (!all_tokens.empty()) {
                 result.token_ids = all_tokens[0];
                 if (tokenizer_.loaded()) {

@@ -49,6 +49,14 @@ for (const auto &w : result.word_timestamps) {
 // [0.56s - 0.96s] (0.87) don't
 ```
 
+Phrase boosting for domain-specific vocabulary:
+```cpp
+parakeet::TranscribeOptions opts;
+opts.boost_phrases = {"Phoebe", "portrait"};
+opts.boost_score = 5.0f;  // log-prob bias (default)
+auto result = t.transcribe("audio.wav", opts);
+```
+
 ## High-Level API
 
 ### Offline Transcription (TDT-CTC 110M)
@@ -215,6 +223,23 @@ for (const auto &w : words) {
 }
 ```
 
+**Phrase boosting** (context biasing):
+```cpp
+// Build a trie from boost phrases
+parakeet::ContextTrie trie;
+trie.build({"Phoebe", "portrait"}, tokenizer);
+
+// Boosted CTC decode — biases log-probs toward trie-matched tokens
+auto tokens = parakeet::ctc_greedy_decode_boosted(log_probs, trie, /*boost_score=*/5.0f);
+
+// Boosted TDT decode
+auto tokens = parakeet::tdt_greedy_decode_boosted(model, encoder_out, cfg.durations, trie);
+
+// Also available with timestamps
+auto ts = parakeet::ctc_greedy_decode_with_timestamps_boosted(log_probs, trie);
+auto ts = parakeet::tdt_greedy_decode_with_timestamps_boosted(model, encoder_out, cfg.durations, trie);
+```
+
 **GPU acceleration** (Metal):
 ```cpp
 model.to(axiom::Device::GPU);
@@ -241,6 +266,10 @@ Decoder options:
   --ctc            Use CTC decoder (default: TDT)
   --tdt            Use TDT decoder
 
+Phrase boost:
+  --boost PHRASE   Boost a phrase (repeatable)
+  --boost-score N  Boost score (default: 5.0)
+
 Other options:
   --vocab PATH     SentencePiece vocab file
   --sortformer-weights PATH  Sortformer weights (for diarized mode)
@@ -265,6 +294,10 @@ Examples:
 
 # Word-level timestamps
 ./build/parakeet model.safetensors audio.wav --vocab vocab.txt --timestamps
+
+# Phrase boosting for domain-specific terms
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt \
+  --boost "Phoebe" --boost "portrait" --boost-score 5.0
 
 # 600M multilingual TDT model
 ./build/parakeet model.safetensors audio.wav --vocab vocab.txt --model tdt-600m
@@ -457,7 +490,7 @@ Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. Al
 ### Tier 1 — High Impact
 
 - [x] **Confidence scores** — Per-token and per-word confidence (0.0–1.0) from token log-probs. Available on all decoders (CTC, TDT, RNNT, streaming).
-- [ ] **Phrase boosting (context biasing)** — Token-level trie over a boost list. Bias log-probs during decode for domain-specific vocabulary (product names, jargon, proper nouns). Works with greedy decode.
+- [x] **Phrase boosting (context biasing)** — Token-level trie over a boost list. Bias log-probs during decode for domain-specific vocabulary (product names, jargon, proper nouns). Works with greedy decode.
 - [ ] **Beam search decoding** — CTC prefix beam search and TDT/RNNT beam search with configurable width. 5–15% relative WER reduction over greedy.
 - [ ] **N-gram LM shallow fusion** — Load ARPA language models, score partial hypotheses during beam search. Domain-adapted decoding.
 
