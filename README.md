@@ -381,7 +381,6 @@ Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. Al
 - [ ] **Phrase boosting (context biasing)** — Token-level trie over a boost list. Bias log-probs during decode for domain-specific vocabulary (product names, jargon, proper nouns). Works with greedy decode.
 - [ ] **Beam search decoding** — CTC prefix beam search and TDT/RNNT beam search with configurable width. 5–15% relative WER reduction over greedy.
 - [ ] **N-gram LM shallow fusion** — Load ARPA language models, score partial hypotheses during beam search. Domain-adapted decoding.
-- [ ] **Inverse text normalization (ITN)** — Convert spoken form to written form: "one hundred twenty three" → "123", "march fifth" → "March 5th". Rule-based engine for numbers, dates, money, time.
 
 ### Audio & I/O
 
@@ -407,7 +406,6 @@ Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. Al
 - [ ] **C API** — Flat C interface (`parakeet_transcribe(...)`) for FFI from Python, Swift, Go, Rust.
 - [ ] **f16 inference** — Half-precision weights and compute. 2x memory reduction, faster on Apple Silicon.
 - [ ] **Model quantization** — INT8/INT4 weight quantization for mobile deployment.
-- [ ] **ONNX / CoreML export** — Deploy on iOS/Android without the axiom runtime.
 - [ ] **Hotword / wake word detection** — "Hey Parakeet" trigger phrase detection.
 - [ ] **Speaker embedding extraction** — Speaker verification from Sortformer intermediate layers or TitaNet.
 
