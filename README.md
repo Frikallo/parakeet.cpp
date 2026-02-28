@@ -15,6 +15,7 @@ Built on [axiom](https://github.com/frikallo/axiom) — a lightweight tensor lib
 | `eou-120m` | `ParakeetEOU` | 120M | Streaming | English, RNNT with end-of-utterance detection |
 | `nemotron-600m` | `ParakeetNemotron` | 600M | Streaming | Multilingual, configurable latency (80ms–1120ms) |
 | `sortformer` | `Sortformer` | 117M | Streaming | Speaker diarization (up to 4 speakers) |
+| `diarized` | `DiarizedTranscriber` | 110M+117M | Offline | ASR + diarization → speaker-attributed words |
 
 All ASR models share the same audio pipeline: 16kHz mono WAV → 80-bin Mel spectrogram → FastConformer encoder.
 
@@ -133,6 +134,31 @@ while (auto chunk = get_audio_chunk()) {
 }
 ```
 
+### Diarized Transcription (ASR + Sortformer)
+
+Combines ASR word timestamps with Sortformer speaker diarization to produce speaker-attributed words:
+
+```cpp
+parakeet::DiarizedTranscriber dt("model.safetensors", "sortformer.safetensors",
+                                  "vocab.txt");
+dt.to_gpu();  // optional
+
+auto result = dt.transcribe("meeting.wav");
+for (const auto &w : result.words) {
+    std::cout << "Speaker " << w.speaker_id << " [" << w.start << "s - "
+              << w.end << "s]: " << w.word << std::endl;
+}
+// Speaker 0 [0.24s - 0.48s]: Well
+// Speaker 0 [0.48s - 0.56s]: I
+// Speaker 1 [2.40s - 2.80s]: Yeah
+```
+
+Standalone alignment is also available if you run ASR and Sortformer separately:
+
+```cpp
+auto diarized = parakeet::diarize_transcription(asr_result.word_timestamps, segments);
+```
+
 ## Low-Level API
 
 For full control over the pipeline:
@@ -201,7 +227,7 @@ Usage: parakeet <model.safetensors> <audio.wav> [options]
 Model types:
   --model TYPE     Model type (default: tdt-ctc-110m)
                    Types: tdt-ctc-110m, tdt-600m, eou-120m,
-                          nemotron-600m, sortformer
+                          nemotron-600m, sortformer, diarized
 
 Decoder options:
   --ctc            Use CTC decoder (default: TDT)
@@ -209,6 +235,7 @@ Decoder options:
 
 Other options:
   --vocab PATH     SentencePiece vocab file
+  --sortformer-weights PATH  Sortformer weights (for diarized mode)
   --gpu            Run on Metal GPU
   --timestamps     Show word-level timestamps
   --streaming      Use streaming mode (eou/nemotron models)
@@ -242,9 +269,10 @@ Examples:
 
 # Speaker diarization
 ./build/parakeet sortformer.safetensors meeting.wav --model sortformer
-# Speaker 0: [0.56s - 2.96s]
-# Speaker 0: [3.36s - 4.40s]
-# Speaker 1: [4.80s - 6.24s]
+
+# Diarized transcription (ASR + Sortformer)
+./build/parakeet model.safetensors meeting.wav --model diarized \
+  --sortformer-weights sortformer.safetensors --vocab vocab.txt
 ```
 
 ## Setup
@@ -406,7 +434,7 @@ Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. Al
 
 ### Tier 2 — Production Readiness
 
-- [ ] **Diarized transcription** — Fuse Sortformer speaker segments with ASR word timestamps. Output: "Speaker 1: Hello. Speaker 2: Hi there."
+- [x] **Diarized transcription** — Fuse Sortformer speaker segments with ASR word timestamps. `DiarizedTranscriber` composes ASR + Sortformer into speaker-attributed words.
 - [ ] **Long-form audio chunking** — Split audio >30s into overlapping windows, run encoder on each, merge transcriptions at overlap boundaries.
 - [ ] **VAD (voice activity detection)** — Skip silent regions, reduce compute. Silero VAD integration or energy-based.
 - [ ] **Batch inference** — Pad + length-mask multiple audio files, batch through encoder and decoder. GPU utilization improvement.

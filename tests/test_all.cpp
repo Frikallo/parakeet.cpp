@@ -1030,6 +1030,185 @@ TEST(PositionEmbedding, CenterRow) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  Phase 3: Diarized Transcription
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(DiarizedWord, Defaults) {
+    DiarizedWord dw;
+    EXPECT_EQ(dw.word, "");
+    EXPECT_FLOAT_EQ(dw.start, 0.0f);
+    EXPECT_FLOAT_EQ(dw.end, 0.0f);
+    EXPECT_EQ(dw.speaker_id, -1);
+    EXPECT_FLOAT_EQ(dw.confidence, 1.0f);
+}
+
+TEST(DiarizeTranscription, EmptyInputs) {
+    auto result = diarize_transcription({}, {});
+    EXPECT_TRUE(result.empty());
+}
+
+TEST(DiarizeTranscription, EmptySegments) {
+    std::vector<WordTimestamp> words = {
+        {"hello", 0.0f, 0.5f, 0.9f},
+        {"world", 0.6f, 1.0f, 0.8f},
+    };
+    auto result = diarize_transcription(words, {});
+    ASSERT_EQ(result.size(), 2u);
+    EXPECT_EQ(result[0].speaker_id, -1);
+    EXPECT_EQ(result[1].speaker_id, -1);
+    EXPECT_EQ(result[0].word, "hello");
+    EXPECT_EQ(result[1].word, "world");
+}
+
+TEST(DiarizeTranscription, SingleSpeaker) {
+    std::vector<WordTimestamp> words = {
+        {"hello", 0.1f, 0.5f, 0.95f},
+        {"world", 0.6f, 1.0f, 0.90f},
+    };
+    std::vector<DiarizationSegment> segments = {
+        {0, 0.0f, 1.5f},
+    };
+    auto result = diarize_transcription(words, segments);
+    ASSERT_EQ(result.size(), 2u);
+    EXPECT_EQ(result[0].speaker_id, 0);
+    EXPECT_EQ(result[1].speaker_id, 0);
+}
+
+TEST(DiarizeTranscription, TwoSpeakers) {
+    std::vector<WordTimestamp> words = {
+        {"hello", 0.1f, 0.5f, 0.95f},
+        {"hi", 1.0f, 1.4f, 0.90f},
+    };
+    std::vector<DiarizationSegment> segments = {
+        {0, 0.0f, 0.8f},
+        {1, 0.9f, 1.5f},
+    };
+    auto result = diarize_transcription(words, segments);
+    ASSERT_EQ(result.size(), 2u);
+    EXPECT_EQ(result[0].speaker_id, 0);
+    EXPECT_EQ(result[1].speaker_id, 1);
+}
+
+TEST(DiarizeTranscription, WordInGap) {
+    std::vector<WordTimestamp> words = {
+        {"gap", 2.0f, 2.5f, 0.85f},
+    };
+    std::vector<DiarizationSegment> segments = {
+        {0, 0.0f, 1.0f},
+        {1, 3.0f, 4.0f},
+    };
+    auto result = diarize_transcription(words, segments);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].speaker_id, -1);
+}
+
+TEST(DiarizeTranscription, DominantOverlap) {
+    // Word spans two speakers; pick the one with more overlap
+    std::vector<WordTimestamp> words = {
+        {"overlap", 0.8f, 1.5f, 0.80f},
+    };
+    std::vector<DiarizationSegment> segments = {
+        {0, 0.0f, 1.0f}, // overlap with word: 1.0 - 0.8 = 0.2
+        {1, 1.0f, 2.0f}, // overlap with word: 1.5 - 1.0 = 0.5
+    };
+    auto result = diarize_transcription(words, segments);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].speaker_id, 1); // speaker 1 has more overlap
+}
+
+TEST(DiarizeTranscription, OverlappingSpeakerSegments) {
+    // Two segments from different speakers overlap, word is in the overlap region
+    std::vector<WordTimestamp> words = {
+        {"both", 1.0f, 1.5f, 0.75f},
+    };
+    std::vector<DiarizationSegment> segments = {
+        {0, 0.0f, 2.0f}, // overlap with word: 0.5
+        {1, 0.5f, 1.2f}, // overlap with word: 1.2 - 1.0 = 0.2
+    };
+    auto result = diarize_transcription(words, segments);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].speaker_id, 0); // speaker 0 has 0.5 vs 0.2
+}
+
+TEST(DiarizeTranscription, MultipleSegmentsSameSpeaker) {
+    // Same speaker has two separate segments that both overlap a word
+    std::vector<WordTimestamp> words = {
+        {"long", 0.5f, 2.5f, 0.70f},
+    };
+    std::vector<DiarizationSegment> segments = {
+        {0, 0.0f, 1.0f}, // overlap: 0.5
+        {1, 1.0f, 2.0f}, // overlap: 1.0
+        {0, 2.0f, 3.0f}, // overlap: 0.5
+    };
+    // Speaker 0 total: 0.5 + 0.5 = 1.0, Speaker 1 total: 1.0
+    // Tie goes to whichever is found first; but let's make speaker 0 win
+    // Actually with exact tie, depends on iteration order. Adjust:
+    std::vector<DiarizationSegment> segments2 = {
+        {0, 0.0f, 1.2f}, // overlap: 0.7
+        {1, 1.2f, 1.8f}, // overlap: 0.6
+        {0, 1.8f, 3.0f}, // overlap: 0.7
+    };
+    auto result = diarize_transcription(words, segments2);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_EQ(result[0].speaker_id, 0); // 0.7+0.7=1.4 > 0.6
+}
+
+TEST(DiarizeTranscription, ConfidencePreserved) {
+    std::vector<WordTimestamp> words = {
+        {"test", 0.0f, 0.5f, 0.42f},
+    };
+    std::vector<DiarizationSegment> segments = {
+        {0, 0.0f, 1.0f},
+    };
+    auto result = diarize_transcription(words, segments);
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_FLOAT_EQ(result[0].confidence, 0.42f);
+}
+
+TEST(DiarizeTranscription, WordTimesPreserved) {
+    std::vector<WordTimestamp> words = {
+        {"test", 1.23f, 4.56f, 0.99f},
+    };
+    auto result = diarize_transcription(words, {});
+    ASSERT_EQ(result.size(), 1u);
+    EXPECT_FLOAT_EQ(result[0].start, 1.23f);
+    EXPECT_FLOAT_EQ(result[0].end, 4.56f);
+    EXPECT_EQ(result[0].word, "test");
+}
+
+// ─── Diarized Transcription Integration (requires model weights) ────────────
+
+static bool has_sortformer_weights() {
+    return std::filesystem::exists(model_path("sortformer.safetensors"));
+}
+
+TEST_F(ModelTest, DiarizedTranscriberE2E) {
+    if (!has_sortformer_weights())
+        GTEST_SKIP() << "sortformer.safetensors not found";
+
+    DiarizedTranscriber dt(model_path("model.safetensors"),
+                           model_path("sortformer.safetensors"),
+                           model_path("vocab.txt"));
+    auto result = dt.transcribe(model_path("2086-149220-0033.wav"));
+
+    EXPECT_FALSE(result.text.empty());
+    EXPECT_FALSE(result.words.empty());
+    EXPECT_FALSE(result.word_timestamps.empty());
+
+    // Verify word times are valid
+    for (const auto &w : result.words) {
+        EXPECT_GE(w.start, 0.0f);
+        EXPECT_GE(w.end, w.start);
+        EXPECT_FALSE(w.word.empty());
+    }
+
+    // Verify monotonic word start times
+    for (size_t i = 1; i < result.words.size(); ++i) {
+        EXPECT_GE(result.words[i].start, result.words[i - 1].start);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════════════════════════════
 
