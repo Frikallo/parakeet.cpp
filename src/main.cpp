@@ -554,8 +554,7 @@ static int run_diarized(const std::string &weights_path,
         float run_start = result.words[i].start;
         std::string run_text = result.words[i].word;
         size_t j = i + 1;
-        while (j < result.words.size() &&
-               result.words[j].speaker_id == spk) {
+        while (j < result.words.size() && result.words[j].speaker_id == spk) {
             run_text += " " + result.words[j].word;
             ++j;
         }
