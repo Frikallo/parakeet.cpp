@@ -36,12 +36,16 @@ auto result = t.transcribe("audio.wav", parakeet::Decoder::CTC);  // fast greedy
 auto result = t.transcribe("audio.wav", parakeet::Decoder::TDT);  // better accuracy (default)
 ```
 
-Word-level timestamps:
+Word-level timestamps with confidence:
 ```cpp
 auto result = t.transcribe("audio.wav", parakeet::Decoder::TDT, /*timestamps=*/true);
 for (const auto &w : result.word_timestamps) {
-    std::cout << "[" << w.start << "s - " << w.end << "s] " << w.word << std::endl;
+    std::cout << "[" << w.start << "s - " << w.end << "s] "
+              << "(" << w.confidence << ") " << w.word << std::endl;
 }
+// [0.24s - 0.48s] (0.98) Well
+// [0.48s - 0.56s] (0.95) I
+// [0.56s - 0.96s] (0.87) don't
 ```
 
 ## High-Level API
@@ -158,7 +162,7 @@ auto tokens = parakeet::tdt_greedy_decode(model, encoder_out, cfg.durations);
 std::cout << tokenizer.decode(tokens[0]) << std::endl;
 ```
 
-**Timestamps** (CTC or TDT):
+**Timestamps with confidence** (CTC, TDT, or RNNT):
 ```cpp
 // CTC timestamps
 auto ts = parakeet::ctc_greedy_decode_with_timestamps(log_probs);
@@ -166,8 +170,15 @@ auto ts = parakeet::ctc_greedy_decode_with_timestamps(log_probs);
 // TDT timestamps
 auto ts = parakeet::tdt_greedy_decode_with_timestamps(model, encoder_out, cfg.durations);
 
-// Group into word-level timestamps
+// RNNT timestamps
+auto ts = parakeet::rnnt_greedy_decode_with_timestamps(model, encoder_out);
+
+// Group into word-level timestamps (confidence = min token confidence per word)
 auto words = parakeet::group_timestamps(ts[0], tokenizer.pieces());
+for (const auto &w : words) {
+    // w.confidence is in [0, 1]
+    std::cout << w.word << " (" << w.confidence << ")" << std::endl;
+}
 ```
 
 **GPU acceleration** (Metal):
@@ -377,7 +388,7 @@ Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. Al
 
 ### Tier 1 — High Impact
 
-- [ ] **Confidence scores** — Per-word confidence (0.0–1.0) from token log-probs. Entropy-based or max-logprob aggregation.
+- [x] **Confidence scores** — Per-token and per-word confidence (0.0–1.0) from token log-probs. Available on all decoders (CTC, TDT, RNNT, streaming).
 - [ ] **Phrase boosting (context biasing)** — Token-level trie over a boost list. Bias log-probs during decode for domain-specific vocabulary (product names, jargon, proper nouns). Works with greedy decode.
 - [ ] **Beam search decoding** — CTC prefix beam search and TDT/RNNT beam search with configurable width. 5–15% relative WER reduction over greedy.
 - [ ] **N-gram LM shallow fusion** — Load ARPA language models, score partial hypotheses during beam search. Domain-adapted decoding.
@@ -415,7 +426,7 @@ Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. Al
 - Offline models have ~4-5 minute audio length limits; split longer files or use streaming models
 - Blank token ID is 1024 (110M) or 8192 (600M)
 - GPU acceleration requires Apple Silicon with Metal support
-- Timestamps use frame-level alignment: `frame * 0.08s` (8x subsampling × 160 hop / 16kHz)
+- Timestamps use frame-level alignment: `frame * 0.08s` (8x subsampling × 160 hop / 16kHz). Confidence = `exp(max_log_prob)` per token, min-aggregated to word level
 - Sortformer diarization uses unnormalized features (`normalize = false`) — this differs from ASR models
 
 ## License

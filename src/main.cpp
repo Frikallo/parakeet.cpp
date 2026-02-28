@@ -153,8 +153,8 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
             std::cout << "\n--- Word Timestamps ---" << std::endl;
             for (const auto &w : words) {
                 std::cout << "  [" << std::fixed << std::setprecision(2)
-                          << w.start << "s - " << w.end << "s] " << w.word
-                          << std::endl;
+                          << w.start << "s - " << w.end << "s] ("
+                          << w.confidence << ") " << w.word << std::endl;
             }
         }
     }
@@ -233,8 +233,8 @@ static int run_tdt_600m(const std::string &weights_path,
             std::cout << "\n--- Word Timestamps ---" << std::endl;
             for (const auto &w : words) {
                 std::cout << "  [" << std::fixed << std::setprecision(2)
-                          << w.start << "s - " << w.end << "s] " << w.word
-                          << std::endl;
+                          << w.start << "s - " << w.end << "s] ("
+                          << w.confidence << ") " << w.word << std::endl;
             }
         }
     }
@@ -245,7 +245,8 @@ static int run_tdt_600m(const std::string &weights_path,
 
 static int run_rnnt_600m(const std::string &weights_path,
                          const std::string &audio_path,
-                         const std::string &vocab_path, bool use_gpu) {
+                         const std::string &vocab_path, bool use_gpu,
+                         bool show_timestamps) {
     using namespace parakeet;
     using Clock = std::chrono::high_resolution_clock;
 
@@ -281,8 +282,21 @@ static int run_rnnt_600m(const std::string &weights_path,
               << " ms" << std::endl;
 
     int blank_id = cfg.prediction.vocab_size - 1;
+
+    std::vector<std::vector<int>> token_ids;
+    std::vector<std::vector<TimestampedToken>> timestamped_tokens;
+
     t0 = Clock::now();
-    auto token_ids = rnnt_greedy_decode(model, encoder_out, blank_id);
+    if (show_timestamps) {
+        timestamped_tokens =
+            rnnt_greedy_decode_with_timestamps(model, encoder_out, blank_id);
+        token_ids.resize(timestamped_tokens.size());
+        for (size_t b = 0; b < timestamped_tokens.size(); ++b)
+            for (const auto &t : timestamped_tokens[b])
+                token_ids[b].push_back(t.token_id);
+    } else {
+        token_ids = rnnt_greedy_decode(model, encoder_out, blank_id);
+    }
     t1 = Clock::now();
     std::cout << "Decoder: RNNT ("
               << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
@@ -295,6 +309,17 @@ static int run_rnnt_600m(const std::string &weights_path,
         if (tokenizer.loaded()) {
             std::cout << tokenizer.decode(token_ids[b]) << std::endl;
         }
+        if (show_timestamps && b < timestamped_tokens.size() &&
+            tokenizer.loaded()) {
+            auto words =
+                group_timestamps(timestamped_tokens[b], tokenizer.pieces());
+            std::cout << "\n--- Word Timestamps ---" << std::endl;
+            for (const auto &w : words) {
+                std::cout << "  [" << std::fixed << std::setprecision(2)
+                          << w.start << "s - " << w.end << "s] ("
+                          << w.confidence << ") " << w.word << std::endl;
+            }
+        }
     }
     return 0;
 }
@@ -303,7 +328,8 @@ static int run_rnnt_600m(const std::string &weights_path,
 
 static int run_eou_streaming(const std::string &weights_path,
                              const std::string &audio_path,
-                             const std::string &vocab_path, bool use_gpu) {
+                             const std::string &vocab_path, bool use_gpu,
+                             bool show_timestamps) {
     using namespace parakeet;
     using Clock = std::chrono::high_resolution_clock;
 
@@ -347,6 +373,17 @@ static int run_eou_streaming(const std::string &weights_path,
               << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
                      .count()
               << " ms" << std::endl;
+
+    if (show_timestamps && transcriber.tokenizer().loaded()) {
+        auto words = group_timestamps(transcriber.get_timestamped_tokens(),
+                                      transcriber.tokenizer().pieces());
+        std::cout << "\n--- Word Timestamps ---" << std::endl;
+        for (const auto &w : words) {
+            std::cout << "  [" << std::fixed << std::setprecision(2) << w.start
+                      << "s - " << w.end << "s] (" << w.confidence << ") "
+                      << w.word << std::endl;
+        }
+    }
     return 0;
 }
 
@@ -355,7 +392,7 @@ static int run_eou_streaming(const std::string &weights_path,
 static int run_nemotron_streaming(const std::string &weights_path,
                                   const std::string &audio_path,
                                   const std::string &vocab_path, bool use_gpu,
-                                  int latency_frames) {
+                                  bool show_timestamps, int latency_frames) {
     using namespace parakeet;
     using Clock = std::chrono::high_resolution_clock;
 
@@ -391,6 +428,17 @@ static int run_nemotron_streaming(const std::string &weights_path,
               << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
                      .count()
               << " ms" << std::endl;
+
+    if (show_timestamps && transcriber.tokenizer().loaded()) {
+        auto words = group_timestamps(transcriber.get_timestamped_tokens(),
+                                      transcriber.tokenizer().pieces());
+        std::cout << "\n--- Word Timestamps ---" << std::endl;
+        for (const auto &w : words) {
+            std::cout << "  [" << std::fixed << std::setprecision(2) << w.start
+                      << "s - " << w.end << "s] (" << w.confidence << ") "
+                      << w.word << std::endl;
+        }
+    }
     return 0;
 }
 
@@ -499,13 +547,15 @@ int main(int argc, char *argv[]) {
             return run_tdt_600m(weights_path, audio_path, vocab_path, use_gpu,
                                 show_timestamps);
         } else if (model_type == "rnnt-600m") {
-            return run_rnnt_600m(weights_path, audio_path, vocab_path, use_gpu);
+            return run_rnnt_600m(weights_path, audio_path, vocab_path, use_gpu,
+                                 show_timestamps);
         } else if (model_type == "eou-120m") {
             return run_eou_streaming(weights_path, audio_path, vocab_path,
-                                     use_gpu);
+                                     use_gpu, show_timestamps);
         } else if (model_type == "nemotron-600m") {
             return run_nemotron_streaming(weights_path, audio_path, vocab_path,
-                                          use_gpu, latency_frames);
+                                          use_gpu, show_timestamps,
+                                          latency_frames);
         } else if (model_type == "sortformer") {
             return run_sortformer(weights_path, audio_path, use_gpu);
         } else {

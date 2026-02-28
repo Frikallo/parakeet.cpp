@@ -1,5 +1,6 @@
 #include "parakeet/ctc.hpp"
 
+#include <cmath>
 #include <iostream>
 
 namespace parakeet {
@@ -109,7 +110,7 @@ ctc_greedy_decode_with_timestamps(const Tensor &log_probs, int blank_id) {
                 }
                 // If new token is non-blank, start a new span
                 if (best != blank_id) {
-                    tokens.push_back({best, t, t});
+                    tokens.push_back({best, t, t, std::exp(best_val)});
                 }
                 token_start_frame = t;
             }

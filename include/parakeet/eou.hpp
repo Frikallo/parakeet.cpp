@@ -81,6 +81,8 @@ struct StreamingDecodeState {
     std::vector<LSTMState> lstm_states;
     Tensor last_token; // (1,) int32
     std::vector<int> tokens;
+    std::vector<TimestampedToken> timestamped_tokens;
+    int frame_offset = 0; // absolute frame position across chunks
     bool initialized = false;
 };
 
@@ -137,6 +139,11 @@ class StreamingTranscriber {
 
     // Get full transcription so far.
     std::string get_text() const;
+
+    // Get accumulated timestamped tokens across all chunks.
+    const std::vector<TimestampedToken> &get_timestamped_tokens() const {
+        return decode_state_.timestamped_tokens;
+    }
 
     ParakeetEOU &model() { return model_; }
     const Tokenizer &tokenizer() const { return tokenizer_; }

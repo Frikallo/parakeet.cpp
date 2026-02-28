@@ -8,6 +8,7 @@
 #include "parakeet/config.hpp"
 #include "parakeet/encoder.hpp"
 #include "parakeet/lstm.hpp"
+#include "parakeet/timestamp.hpp"
 
 namespace parakeet {
 
@@ -88,5 +89,11 @@ std::vector<std::vector<int>> rnnt_greedy_decode(ParakeetRNNT &model,
                                                  const Tensor &encoder_out,
                                                  int blank_id = 1024,
                                                  int max_symbols_per_step = 10);
+
+// ─── Timestamped RNNT Greedy Decode ────────────────────────────────────────
+
+std::vector<std::vector<TimestampedToken>> rnnt_greedy_decode_with_timestamps(
+    ParakeetRNNT &model, const Tensor &encoder_out, int blank_id = 1024,
+    int max_symbols_per_step = 10);
 
 } // namespace parakeet

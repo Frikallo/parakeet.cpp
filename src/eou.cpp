@@ -1,5 +1,7 @@
 #include "parakeet/eou.hpp"
 
+#include <cmath>
+
 namespace parakeet {
 
 // ─── ParakeetEOU ─────────────────────────────────────────────────────────────
@@ -33,6 +35,7 @@ std::vector<int> rnnt_streaming_decode_chunk(
     int chunk_len = static_cast<int>(encoder_chunk.shape()[1]);
     std::vector<int> new_tokens;
 
+    int base_frame = state.frame_offset;
     int t = 0;
     while (t < chunk_len) {
         auto enc_t = encoder_chunk.slice({Slice(), Slice(t, t + 1)});
@@ -45,10 +48,22 @@ std::vector<int> rnnt_streaming_decode_chunk(
 
             auto [label_lp, dur_lp] = joint.forward(enc_t, pred);
 
-            auto best_label = ops::argmax(label_lp.squeeze(0).squeeze(0), -1);
-            auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
+            // Manual argmax on label log-probs for index + confidence
+            auto label_1d =
+                label_lp.squeeze(0).squeeze(0).cpu().ascontiguousarray();
+            const float *label_data = label_1d.typed_data<float>();
+            int vocab_size = static_cast<int>(label_1d.shape()[0]);
+            int token_id = 0;
+            float best_lp = label_data[0];
+            for (int v = 1; v < vocab_size; ++v) {
+                if (label_data[v] > best_lp) {
+                    best_lp = label_data[v];
+                    token_id = v;
+                }
+            }
+            float confidence = std::exp(best_lp);
 
-            int token_id = best_label.item<int>();
+            auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
             int dur_idx = best_dur.item<int>();
             int skip = (dur_idx < static_cast<int>(durations.size()))
                            ? durations[dur_idx]
@@ -62,6 +77,12 @@ std::vector<int> rnnt_streaming_decode_chunk(
 
             new_tokens.push_back(token_id);
             state.tokens.push_back(token_id);
+
+            int abs_frame = base_frame + t;
+            int end_frame = abs_frame + std::max(skip, 1) - 1;
+            state.timestamped_tokens.push_back(
+                {token_id, abs_frame, end_frame, confidence});
+
             state.last_token = Tensor({1}, DType::Int32);
             state.last_token.fill(token_id);
 
@@ -72,6 +93,7 @@ std::vector<int> rnnt_streaming_decode_chunk(
         }
     }
 
+    state.frame_offset += chunk_len;
     return new_tokens;
 }
 
