@@ -6,7 +6,7 @@ namespace parakeet {
 
 TDTJoint::TDTJoint(const JointConfig &config, int num_durations)
     : config_(config), num_durations_(num_durations), enc_proj_(true),
-      pred_proj_(true), label_proj_(true), duration_proj_(true) {
+      pred_proj_(false), label_proj_(true), duration_proj_(true) {
     AX_REGISTER_MODULES(enc_proj_, pred_proj_, label_proj_, duration_proj_);
 }
 
@@ -51,7 +51,10 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
             states[l] = {Tensor::zeros({1, hs}), Tensor::zeros({1, hs})};
         }
 
-        auto token = Tensor::zeros({1}, DType::Int32);
+        // Start with blank token (SOS) — blank embedding is all zeros,
+        // matching NeMo's _SOS = _blank_index behavior.
+        auto token = Tensor({1}, DType::Int32);
+        token.fill(blank_id);
         int t = 0;
 
         while (t < seq_len) {
@@ -59,6 +62,11 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
                 enc.slice({Slice(), Slice(t, t + 1)}); // (1, 1, hidden)
 
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
+                // Save LSTM states before prediction step.
+                // On blank, we must revert to these (NeMo only updates
+                // decoder state on non-blank emissions).
+                auto saved_states = states;
+
                 auto pred = prediction.step(token, states);
                 pred = pred.unsqueeze(1); // (1, 1, pred_hidden)
 
@@ -76,6 +84,8 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
                                : 1;
 
                 if (token_id == blank_id) {
+                    // Revert LSTM state — blank doesn't update decoder
+                    states = saved_states;
                     t += std::max(skip, 1);
                     break;
                 }
@@ -126,13 +136,16 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
             states[l] = {Tensor::zeros({1, hs}), Tensor::zeros({1, hs})};
         }
 
-        auto token = Tensor::zeros({1}, DType::Int32);
+        auto token = Tensor({1}, DType::Int32);
+        token.fill(blank_id);
         int t = 0;
 
         while (t < seq_len) {
             auto enc_t = enc.slice({Slice(), Slice(t, t + 1)});
 
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
+                auto saved_states = states;
+
                 auto pred = prediction.step(token, states);
                 pred = pred.unsqueeze(1);
 
@@ -149,6 +162,7 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
                                : 1;
 
                 if (token_id == blank_id) {
+                    states = saved_states;
                     t += std::max(skip, 1);
                     break;
                 }

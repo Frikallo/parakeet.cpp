@@ -24,7 +24,8 @@ std::vector<int> rnnt_streaming_decode_chunk(
             state.lstm_states[l] = {Tensor::zeros({1, hs}),
                                     Tensor::zeros({1, hs})};
         }
-        state.last_token = Tensor::zeros({1}, DType::Int32);
+        state.last_token = Tensor({1}, DType::Int32);
+        state.last_token.fill(blank_id);
         state.initialized = true;
     }
 
@@ -37,6 +38,8 @@ std::vector<int> rnnt_streaming_decode_chunk(
         auto enc_t = encoder_chunk.slice({Slice(), Slice(t, t + 1)});
 
         for (int sym = 0; sym < max_symbols_per_step; ++sym) {
+            auto saved_states = state.lstm_states;
+
             auto pred = prediction.step(state.last_token, state.lstm_states);
             pred = pred.unsqueeze(1);
 
@@ -52,6 +55,7 @@ std::vector<int> rnnt_streaming_decode_chunk(
                            : 1;
 
             if (token_id == blank_id) {
+                state.lstm_states = saved_states;
                 t += std::max(skip, 1);
                 break;
             }

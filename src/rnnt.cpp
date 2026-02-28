@@ -73,14 +73,17 @@ std::vector<std::vector<int>> rnnt_greedy_decode(ParakeetRNNT &model,
             states[l] = {Tensor::zeros({1, hs}), Tensor::zeros({1, hs})};
         }
 
-        // Start with blank token
-        auto token = Tensor::zeros({1}, DType::Int32);
+        // Start with blank token (SOS)
+        auto token = Tensor({1}, DType::Int32);
+        token.fill(blank_id);
 
         for (int t = 0; t < seq_len; ++t) {
             auto enc_t =
                 enc.slice({Slice(), Slice(t, t + 1)}); // (1, 1, hidden)
 
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
+                auto saved_states = states;
+
                 auto pred = model.prediction().step(token, states);
                 pred = pred.unsqueeze(1); // (1, 1, pred_hidden)
 
@@ -91,6 +94,7 @@ std::vector<std::vector<int>> rnnt_greedy_decode(ParakeetRNNT &model,
                 int token_id = best.item<int>();
 
                 if (token_id == blank_id) {
+                    states = saved_states;
                     break;
                 }
 
