@@ -10,14 +10,16 @@ namespace parakeet {
 
 struct TimestampedToken {
     int token_id;
-    int start_frame; // encoder frame index
-    int end_frame;   // encoder frame index (inclusive)
+    int start_frame;         // encoder frame index
+    int end_frame;           // encoder frame index (inclusive)
+    float confidence = 1.0f; // exp(log_prob), range [0, 1]
 };
 
 struct WordTimestamp {
     std::string word;
-    float start; // seconds
-    float end;   // seconds
+    float start;             // seconds
+    float end;               // seconds
+    float confidence = 1.0f; // min(token confidences), range [0, 1]
 };
 
 // ─── Frame ↔ Time Conversion ─────────────────────────────────────────────────

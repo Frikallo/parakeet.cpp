@@ -99,6 +99,10 @@ class NemotronTranscriber {
         partial_callback_ = std::move(cb);
     }
 
+    const std::vector<TimestampedToken> &get_timestamped_tokens() const {
+        return decode_state_.timestamped_tokens;
+    }
+
     ParakeetNemotron &model() { return model_; }
     const Tokenizer &tokenizer() const { return tokenizer_; }
 

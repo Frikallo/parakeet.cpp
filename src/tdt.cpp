@@ -1,5 +1,7 @@
 #include "parakeet/tdt.hpp"
 
+#include <cmath>
+
 namespace parakeet {
 
 // ─── TDTJoint ───────────────────────────────────────────────────────────────
@@ -151,11 +153,22 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
 
                 auto [label_lp, dur_lp] = joint.forward(enc_t, pred);
 
-                auto best_label =
-                    ops::argmax(label_lp.squeeze(0).squeeze(0), -1);
-                auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
+                // Manual argmax on label log-probs to get both index and value
+                auto label_1d =
+                    label_lp.squeeze(0).squeeze(0).cpu().ascontiguousarray();
+                const float *label_data = label_1d.typed_data<float>();
+                int vocab_size = static_cast<int>(label_1d.shape()[0]);
+                int token_id = 0;
+                float best_lp = label_data[0];
+                for (int v = 1; v < vocab_size; ++v) {
+                    if (label_data[v] > best_lp) {
+                        best_lp = label_data[v];
+                        token_id = v;
+                    }
+                }
+                float confidence = std::exp(best_lp);
 
-                int token_id = best_label.item<int>();
+                auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
                 int dur_idx = best_dur.item<int>();
                 int skip = (dur_idx < static_cast<int>(durations.size()))
                                ? durations[dur_idx]
@@ -171,7 +184,7 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
                 int end_frame = t + std::max(skip, 1) - 1;
                 if (end_frame >= seq_len)
                     end_frame = seq_len - 1;
-                results[b].push_back({token_id, t, end_frame});
+                results[b].push_back({token_id, t, end_frame, confidence});
 
                 token = Tensor({1}, DType::Int32);
                 token.fill(token_id);

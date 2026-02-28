@@ -1,5 +1,7 @@
 #include "parakeet/rnnt.hpp"
 
+#include <cmath>
+
 namespace parakeet {
 
 // ─── RNNTPrediction ─────────────────────────────────────────────────────────
@@ -99,6 +101,72 @@ std::vector<std::vector<int>> rnnt_greedy_decode(ParakeetRNNT &model,
                 }
 
                 results[b].push_back(token_id);
+                token = Tensor({1}, DType::Int32);
+                token.fill(token_id);
+            }
+        }
+    }
+
+    return results;
+}
+
+// ─── Timestamped RNNT Greedy Decode ────────────────────────────────────────
+
+std::vector<std::vector<TimestampedToken>>
+rnnt_greedy_decode_with_timestamps(ParakeetRNNT &model,
+                                   const Tensor &encoder_out, int blank_id,
+                                   int max_symbols_per_step) {
+    auto shape = encoder_out.shape();
+    int batch_size = static_cast<int>(shape[0]);
+    int seq_len = static_cast<int>(shape[1]);
+
+    std::vector<std::vector<TimestampedToken>> results(batch_size);
+
+    for (int b = 0; b < batch_size; ++b) {
+        auto enc = encoder_out.slice({Slice(b, b + 1)});
+
+        int num_layers = model.prediction().config().num_lstm_layers;
+        size_t hs = model.prediction().config().pred_hidden;
+        std::vector<LSTMState> states(num_layers);
+        for (int l = 0; l < num_layers; ++l) {
+            states[l] = {Tensor::zeros({1, hs}), Tensor::zeros({1, hs})};
+        }
+
+        auto token = Tensor({1}, DType::Int32);
+        token.fill(blank_id);
+
+        for (int t = 0; t < seq_len; ++t) {
+            auto enc_t = enc.slice({Slice(), Slice(t, t + 1)});
+
+            for (int sym = 0; sym < max_symbols_per_step; ++sym) {
+                auto saved_states = states;
+
+                auto pred = model.prediction().step(token, states);
+                pred = pred.unsqueeze(1);
+
+                auto logits = model.joint().forward(enc_t, pred);
+
+                // Manual argmax to get both index and log-prob
+                auto lp_1d =
+                    logits.squeeze(0).squeeze(0).cpu().ascontiguousarray();
+                const float *lp_data = lp_1d.typed_data<float>();
+                int vocab_size = static_cast<int>(lp_1d.shape()[0]);
+                int token_id = 0;
+                float best_lp = lp_data[0];
+                for (int v = 1; v < vocab_size; ++v) {
+                    if (lp_data[v] > best_lp) {
+                        best_lp = lp_data[v];
+                        token_id = v;
+                    }
+                }
+                float confidence = std::exp(best_lp);
+
+                if (token_id == blank_id) {
+                    states = saved_states;
+                    break;
+                }
+
+                results[b].push_back({token_id, t, t, confidence});
                 token = Tensor({1}, DType::Int32);
                 token.fill(token_id);
             }
