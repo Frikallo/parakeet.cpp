@@ -216,6 +216,7 @@ std::vector<std::vector<int>> tdt_greedy_decode_boosted(
         while (t < T) {
             auto enc_t = enc.slice({Slice(), Slice(t, t + 1)});
 
+            bool frame_advanced = false;
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
                 auto saved_states = states;
                 auto pred = prediction.step(token, states);
@@ -255,6 +256,7 @@ std::vector<std::vector<int>> tdt_greedy_decode_boosted(
                 if (token_id == blank_id) {
                     states = saved_states;
                     t += std::max(skip, 1);
+                    frame_advanced = true;
                     break;
                 }
 
@@ -266,8 +268,15 @@ std::vector<std::vector<int>> tdt_greedy_decode_boosted(
 
                 if (skip > 0) {
                     t += skip;
+                    frame_advanced = true;
                     break;
                 }
+            }
+
+            // Force advance when max_symbols_per_step reached without
+            // a blank or positive-duration token.
+            if (!frame_advanced) {
+                t += 1;
             }
         }
     }
@@ -309,6 +318,7 @@ tdt_greedy_decode_with_timestamps_boosted(
         while (t < T) {
             auto enc_t = enc.slice({Slice(), Slice(t, t + 1)});
 
+            bool frame_advanced = false;
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
                 auto saved_states = states;
                 auto pred = prediction.step(token, states);
@@ -350,6 +360,7 @@ tdt_greedy_decode_with_timestamps_boosted(
                 if (token_id == blank_id) {
                     states = saved_states;
                     t += std::max(skip, 1);
+                    frame_advanced = true;
                     break;
                 }
 
@@ -365,8 +376,15 @@ tdt_greedy_decode_with_timestamps_boosted(
 
                 if (skip > 0) {
                     t += skip;
+                    frame_advanced = true;
                     break;
                 }
+            }
+
+            // Force advance when max_symbols_per_step reached without
+            // a blank or positive-duration token.
+            if (!frame_advanced) {
+                t += 1;
             }
         }
     }

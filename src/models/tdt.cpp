@@ -68,6 +68,7 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
             auto enc_t =
                 enc.slice({Slice(), Slice(t, t + 1)}); // (1, 1, hidden)
 
+            bool frame_advanced = false;
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
                 // Save LSTM states before prediction step.
                 // On blank, we must revert to these (NeMo only updates
@@ -94,6 +95,7 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
                     // Revert LSTM state — blank doesn't update decoder
                     states = saved_states;
                     t += std::max(skip, 1);
+                    frame_advanced = true;
                     break;
                 }
 
@@ -104,9 +106,18 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
                 // Non-blank with duration > 0 means skip frames
                 if (skip > 0) {
                     t += skip;
+                    frame_advanced = true;
                     break;
                 }
                 // duration 0: emit another symbol on same frame
+            }
+
+            // If max_symbols_per_step reached without advancing the frame
+            // (all predicted tokens were non-blank with duration 0), force
+            // advance by 1 to prevent an infinite loop. This matches NeMo's
+            // behavior where the outer time loop always progresses.
+            if (!frame_advanced) {
+                t += 1;
             }
         }
     }
@@ -156,6 +167,7 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
         while (t < T) {
             auto enc_t = enc.slice({Slice(), Slice(t, t + 1)});
 
+            bool frame_advanced = false;
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
                 auto saved_states = states;
 
@@ -191,6 +203,7 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
                 if (token_id == blank_id) {
                     states = saved_states;
                     t += std::max(skip, 1);
+                    frame_advanced = true;
                     break;
                 }
 
@@ -205,8 +218,15 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
 
                 if (skip > 0) {
                     t += skip;
+                    frame_advanced = true;
                     break;
                 }
+            }
+
+            // If max_symbols_per_step reached without advancing the frame,
+            // force advance by 1 to prevent an infinite loop.
+            if (!frame_advanced) {
+                t += 1;
             }
         }
     }

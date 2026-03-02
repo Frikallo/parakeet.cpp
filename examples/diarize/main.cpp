@@ -19,8 +19,10 @@ int main(int argc, char *argv[]) {
     model.load_state_dict(axiom::io::safetensors::load(argv[1]));
 
     auto audio = parakeet::read_audio(argv[2]);
-    auto features =
-        parakeet::preprocess_audio(audio.samples, {.normalize = false});
+    parakeet::AudioConfig audio_cfg;
+    audio_cfg.n_mels = cfg.nest_encoder.mel_bins; // 128 for sortformer
+    audio_cfg.normalize = false;
+    auto features = parakeet::preprocess_audio(audio.samples, audio_cfg);
     auto segments = model.diarize(features);
 
     std::cout << "Detected " << segments.size() << " segment(s):\n\n";

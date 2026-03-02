@@ -41,6 +41,7 @@ std::vector<int> rnnt_streaming_decode_chunk(
     while (t < chunk_len) {
         auto enc_t = encoder_chunk.slice({Slice(), Slice(t, t + 1)});
 
+        bool frame_advanced = false;
         for (int sym = 0; sym < max_symbols_per_step; ++sym) {
             auto saved_states = state.lstm_states;
 
@@ -76,6 +77,7 @@ std::vector<int> rnnt_streaming_decode_chunk(
             if (token_id == blank_id) {
                 state.lstm_states = saved_states;
                 t += std::max(skip, 1);
+                frame_advanced = true;
                 break;
             }
 
@@ -92,8 +94,15 @@ std::vector<int> rnnt_streaming_decode_chunk(
 
             if (skip > 0) {
                 t += skip;
+                frame_advanced = true;
                 break;
             }
+        }
+
+        // Force advance when max_symbols_per_step reached without
+        // a blank or positive-duration token.
+        if (!frame_advanced) {
+            t += 1;
         }
     }
 

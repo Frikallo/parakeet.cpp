@@ -161,7 +161,12 @@ Tensor ConformerAttention::rel_position_attention(const Tensor &query,
 
     // Apply mask if present
     if (mask.storage()) {
-        scores = ops::masked_fill(scores, mask, -1e9f);
+        // Ensure scores is contiguous before masked_fill (avoids null-storage
+        // view issues with complex broadcast chains)
+        scores = scores.ascontiguousarray();
+        // Convert float mask to bool for masked_fill
+        auto bool_mask = mask.astype(axiom::DType::Bool);
+        scores = ops::masked_fill(scores, bool_mask, -1e9f);
     }
 
     // Softmax over last dim
