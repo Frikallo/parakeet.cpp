@@ -8,10 +8,11 @@
 
 #include "parakeet/audio/audio.hpp"
 #include "parakeet/audio/audio_io.hpp"
+#include "parakeet/audio/vad.hpp"
 #include "parakeet/decode/arpa_lm.hpp"
 #include "parakeet/decode/beam_search.hpp"
-#include "parakeet/audio/vad.hpp"
 #include "parakeet/decode/phrase_boost.hpp"
+#include "parakeet/decode/tdt_beam_search.hpp"
 #include "parakeet/decode/timestamp.hpp"
 #include "parakeet/decode/vocab.hpp"
 #include "parakeet/models/config.hpp"
@@ -40,7 +41,7 @@ struct TranscribeResult {
 
 // ─── High-Level Transcription API ───────────────────────────────────────────
 
-enum class Decoder { CTC, TDT, CTC_BEAM };
+enum class Decoder { CTC, TDT, CTC_BEAM, TDT_BEAM };
 
 // ─── Transcription Options ──────────────────────────────────────────────────
 
@@ -50,11 +51,11 @@ struct TranscribeOptions {
     std::vector<std::string> boost_phrases;
     float boost_score = 5.0f;
 
-    // Beam search options (used when decoder == CTC_BEAM)
+    // Beam search options (used when decoder == CTC_BEAM or TDT_BEAM)
     int beam_width = 8;
     std::string lm_path;    // Path to ARPA language model (optional)
     float lm_weight = 0.5f; // LM interpolation weight
-    bool use_vad = false; // Enable Silero VAD preprocessing
+    bool use_vad = false;   // Enable Silero VAD preprocessing
 };
 
 /// Transcribe an audio file to text using a ParakeetTDTCTC model.
@@ -154,14 +155,31 @@ class Transcriber {
 
         // Load LM if beam search with LM requested
         ArpaLM lm;
-        if (opts.decoder == Decoder::CTC_BEAM && !opts.lm_path.empty()) {
+        if ((opts.decoder == Decoder::CTC_BEAM ||
+             opts.decoder == Decoder::TDT_BEAM) &&
+            !opts.lm_path.empty()) {
             lm.load(opts.lm_path);
         }
 
         TranscribeResult result;
 
         if (opts.timestamps) {
-            if (opts.decoder == Decoder::CTC_BEAM) {
+            if (opts.decoder == Decoder::TDT_BEAM) {
+                TDTBeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = lm.loaded() ? &lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                auto all_ts = tdt_beam_decode_with_timestamps(
+                    model_, encoder_out, config_.durations, bs_opts);
+                if (!all_ts.empty()) {
+                    result.timestamped_tokens = all_ts[0];
+                    for (const auto &t : result.timestamped_tokens) {
+                        result.token_ids.push_back(t.token_id);
+                    }
+                }
+            } else if (opts.decoder == Decoder::CTC_BEAM) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
                 auto cpu_lp = log_probs.cpu();
                 BeamSearchOptions bs_opts;
@@ -218,7 +236,16 @@ class Transcriber {
             }
         } else {
             std::vector<std::vector<int>> all_tokens;
-            if (opts.decoder == Decoder::CTC_BEAM) {
+            if (opts.decoder == Decoder::TDT_BEAM) {
+                TDTBeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = lm.loaded() ? &lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                all_tokens = tdt_beam_decode(model_, encoder_out,
+                                             config_.durations, bs_opts);
+            } else if (opts.decoder == Decoder::CTC_BEAM) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
                 auto cpu_lp = log_probs.cpu();
                 BeamSearchOptions bs_opts;
@@ -314,14 +341,31 @@ class Transcriber {
 
         // Load LM if beam search with LM requested
         ArpaLM batch_lm;
-        if (opts.decoder == Decoder::CTC_BEAM && !opts.lm_path.empty()) {
+        if ((opts.decoder == Decoder::CTC_BEAM ||
+             opts.decoder == Decoder::TDT_BEAM) &&
+            !opts.lm_path.empty()) {
             batch_lm.load(opts.lm_path);
         }
 
         std::vector<TranscribeResult> results(samples.size());
 
         if (opts.timestamps) {
-            if (opts.decoder == Decoder::CTC_BEAM) {
+            if (opts.decoder == Decoder::TDT_BEAM) {
+                TDTBeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = batch_lm.loaded() ? &batch_lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                auto all_ts = tdt_beam_decode_with_timestamps(
+                    model_, encoder_out, config_.durations, bs_opts,
+                    sub_lengths);
+                for (size_t b = 0; b < all_ts.size(); ++b) {
+                    results[b].timestamped_tokens = all_ts[b];
+                    for (const auto &t : all_ts[b])
+                        results[b].token_ids.push_back(t.token_id);
+                }
+            } else if (opts.decoder == Decoder::CTC_BEAM) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
                 auto cpu_lp = log_probs.cpu();
                 BeamSearchOptions bs_opts;
@@ -375,7 +419,17 @@ class Transcriber {
             }
         } else {
             std::vector<std::vector<int>> all_tokens;
-            if (opts.decoder == Decoder::CTC_BEAM) {
+            if (opts.decoder == Decoder::TDT_BEAM) {
+                TDTBeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = batch_lm.loaded() ? &batch_lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                all_tokens =
+                    tdt_beam_decode(model_, encoder_out, config_.durations,
+                                    bs_opts, sub_lengths);
+            } else if (opts.decoder == Decoder::CTC_BEAM) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
                 auto cpu_lp = log_probs.cpu();
                 BeamSearchOptions bs_opts;
@@ -519,19 +573,42 @@ class TDTTranscriber {
             trie.build(opts.boost_phrases, tokenizer_);
         }
 
+        // Load LM if beam search with LM requested
+        ArpaLM lm;
+        if (opts.decoder == Decoder::TDT_BEAM && !opts.lm_path.empty()) {
+            lm.load(opts.lm_path);
+        }
+
         TranscribeResult result;
 
         if (opts.timestamps) {
-            auto all_ts = use_boost
-                              ? tdt_greedy_decode_with_timestamps_boosted(
-                                    model_, encoder_out, config_.durations,
-                                    trie, opts.boost_score)
-                              : tdt_greedy_decode_with_timestamps(
-                                    model_, encoder_out, config_.durations);
-            if (!all_ts.empty()) {
-                result.timestamped_tokens = all_ts[0];
-                for (const auto &t : result.timestamped_tokens) {
-                    result.token_ids.push_back(t.token_id);
+            if (opts.decoder == Decoder::TDT_BEAM) {
+                TDTBeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = lm.loaded() ? &lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                auto all_ts = tdt_beam_decode_with_timestamps(
+                    model_, encoder_out, config_.durations, bs_opts);
+                if (!all_ts.empty()) {
+                    result.timestamped_tokens = all_ts[0];
+                    for (const auto &t : result.timestamped_tokens) {
+                        result.token_ids.push_back(t.token_id);
+                    }
+                }
+            } else {
+                auto all_ts = use_boost
+                                  ? tdt_greedy_decode_with_timestamps_boosted(
+                                        model_, encoder_out, config_.durations,
+                                        trie, opts.boost_score)
+                                  : tdt_greedy_decode_with_timestamps(
+                                        model_, encoder_out, config_.durations);
+                if (!all_ts.empty()) {
+                    result.timestamped_tokens = all_ts[0];
+                    for (const auto &t : result.timestamped_tokens) {
+                        result.token_ids.push_back(t.token_id);
+                    }
                 }
             }
 
@@ -546,16 +623,34 @@ class TDTTranscriber {
                     result.timestamped_tokens, tokenizer_.pieces());
             }
         } else {
-            auto all_tokens =
-                use_boost
-                    ? tdt_greedy_decode_boosted(model_, encoder_out,
-                                                config_.durations, trie,
-                                                opts.boost_score)
-                    : tdt_greedy_decode(model_, encoder_out, config_.durations);
-            if (!all_tokens.empty()) {
-                result.token_ids = all_tokens[0];
-                if (tokenizer_.loaded()) {
-                    result.text = tokenizer_.decode(result.token_ids);
+            if (opts.decoder == Decoder::TDT_BEAM) {
+                TDTBeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = lm.loaded() ? &lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                auto all_tokens = tdt_beam_decode(model_, encoder_out,
+                                                  config_.durations, bs_opts);
+                if (!all_tokens.empty()) {
+                    result.token_ids = all_tokens[0];
+                    if (tokenizer_.loaded()) {
+                        result.text = tokenizer_.decode(result.token_ids);
+                    }
+                }
+            } else {
+                auto all_tokens =
+                    use_boost
+                        ? tdt_greedy_decode_boosted(model_, encoder_out,
+                                                    config_.durations, trie,
+                                                    opts.boost_score)
+                        : tdt_greedy_decode(model_, encoder_out,
+                                            config_.durations);
+                if (!all_tokens.empty()) {
+                    result.token_ids = all_tokens[0];
+                    if (tokenizer_.loaded()) {
+                        result.text = tokenizer_.decode(result.token_ids);
+                    }
                 }
             }
         }
@@ -620,21 +715,46 @@ class TDTTranscriber {
             trie.build(opts.boost_phrases, tokenizer_);
         }
 
+        // Load LM if beam search with LM requested
+        ArpaLM batch_lm;
+        if (opts.decoder == Decoder::TDT_BEAM && !opts.lm_path.empty()) {
+            batch_lm.load(opts.lm_path);
+        }
+
         int blank_id = config_.prediction.vocab_size - 1;
         std::vector<TranscribeResult> results(samples.size());
 
         if (opts.timestamps) {
-            auto all_ts =
-                use_boost ? tdt_greedy_decode_with_timestamps_boosted(
-                                model_, encoder_out, config_.durations, trie,
-                                opts.boost_score, blank_id, 10, sub_lengths)
-                          : tdt_greedy_decode_with_timestamps(
-                                model_, encoder_out, config_.durations,
-                                blank_id, 10, sub_lengths);
-            for (size_t b = 0; b < all_ts.size(); ++b) {
-                results[b].timestamped_tokens = all_ts[b];
-                for (const auto &t : all_ts[b])
-                    results[b].token_ids.push_back(t.token_id);
+            if (opts.decoder == Decoder::TDT_BEAM) {
+                TDTBeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.blank_id = blank_id;
+                bs_opts.lm = batch_lm.loaded() ? &batch_lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                auto all_ts = tdt_beam_decode_with_timestamps(
+                    model_, encoder_out, config_.durations, bs_opts,
+                    sub_lengths);
+                for (size_t b = 0; b < all_ts.size(); ++b) {
+                    results[b].timestamped_tokens = all_ts[b];
+                    for (const auto &t : all_ts[b])
+                        results[b].token_ids.push_back(t.token_id);
+                }
+            } else {
+                auto all_ts =
+                    use_boost
+                        ? tdt_greedy_decode_with_timestamps_boosted(
+                              model_, encoder_out, config_.durations, trie,
+                              opts.boost_score, blank_id, 10, sub_lengths)
+                        : tdt_greedy_decode_with_timestamps(
+                              model_, encoder_out, config_.durations, blank_id,
+                              10, sub_lengths);
+                for (size_t b = 0; b < all_ts.size(); ++b) {
+                    results[b].timestamped_tokens = all_ts[b];
+                    for (const auto &t : all_ts[b])
+                        results[b].token_ids.push_back(t.token_id);
+                }
             }
             for (size_t b = 0; b < results.size(); ++b) {
                 if (tokenizer_.loaded()) {
@@ -644,13 +764,28 @@ class TDTTranscriber {
                 }
             }
         } else {
-            auto all_tokens =
-                use_boost
-                    ? tdt_greedy_decode_boosted(
-                          model_, encoder_out, config_.durations, trie,
-                          opts.boost_score, blank_id, 10, sub_lengths)
-                    : tdt_greedy_decode(model_, encoder_out, config_.durations,
-                                        blank_id, 10, sub_lengths);
+            std::vector<std::vector<int>> all_tokens;
+            if (opts.decoder == Decoder::TDT_BEAM) {
+                TDTBeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.blank_id = blank_id;
+                bs_opts.lm = batch_lm.loaded() ? &batch_lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                all_tokens =
+                    tdt_beam_decode(model_, encoder_out, config_.durations,
+                                    bs_opts, sub_lengths);
+            } else {
+                all_tokens =
+                    use_boost
+                        ? tdt_greedy_decode_boosted(
+                              model_, encoder_out, config_.durations, trie,
+                              opts.boost_score, blank_id, 10, sub_lengths)
+                        : tdt_greedy_decode(model_, encoder_out,
+                                            config_.durations, blank_id, 10,
+                                            sub_lengths);
+            }
             for (size_t b = 0; b < all_tokens.size(); ++b) {
                 results[b].token_ids = all_tokens[b];
                 if (tokenizer_.loaded()) {

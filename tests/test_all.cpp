@@ -1913,6 +1913,157 @@ TEST(BeamSearchE2E, TranscriberAPIBeamSearch) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  TDT Beam Search
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST(TDTBeamSearch, BeamProducesValidOutput) {
+    if (!has_model_weights() || !has_vocab() || !has_test_audio()) {
+        GTEST_SKIP() << "Model/vocab/audio not available";
+    }
+
+    auto cfg = make_110m_config();
+    ParakeetTDTCTC model(cfg);
+    auto weights = axiom::io::safetensors::load(model_path("model.safetensors"));
+    model.load_state_dict(weights, "", false);
+
+    Tokenizer tokenizer;
+    tokenizer.load(model_path("vocab.txt"));
+
+    auto audio = read_audio(model_path("2086-149220-0033.wav"));
+    auto features = preprocess_audio(audio.samples);
+    auto encoder_out = model.encoder()(features);
+
+    TDTBeamSearchOptions opts;
+    opts.beam_width = 4;
+    opts.pieces = &tokenizer.pieces();
+
+    auto beam_tokens = tdt_beam_decode(model, encoder_out, cfg.durations, opts);
+    ASSERT_FALSE(beam_tokens.empty());
+    ASSERT_FALSE(beam_tokens[0].empty());
+
+    std::string beam_text = tokenizer.decode(beam_tokens[0]);
+    EXPECT_FALSE(beam_text.empty());
+
+    // Also get greedy for comparison
+    auto greedy_tokens = tdt_greedy_decode(model, encoder_out, cfg.durations);
+    ASSERT_FALSE(greedy_tokens.empty());
+    std::string greedy_text = tokenizer.decode(greedy_tokens[0]);
+
+    std::cout << "  TDT Greedy: " << greedy_text << std::endl;
+    std::cout << "  TDT Beam:   " << beam_text << std::endl;
+    std::cout << "  Greedy tokens: " << greedy_tokens[0].size()
+              << ", Beam tokens: " << beam_tokens[0].size() << std::endl;
+}
+
+TEST(TDTBeamSearch, BeamWithTimestamps) {
+    if (!has_model_weights() || !has_vocab() || !has_test_audio()) {
+        GTEST_SKIP() << "Model/vocab/audio not available";
+    }
+
+    auto cfg = make_110m_config();
+    ParakeetTDTCTC model(cfg);
+    auto weights = axiom::io::safetensors::load(model_path("model.safetensors"));
+    model.load_state_dict(weights, "", false);
+
+    Tokenizer tokenizer;
+    tokenizer.load(model_path("vocab.txt"));
+
+    auto audio = read_audio(model_path("2086-149220-0033.wav"));
+    auto features = preprocess_audio(audio.samples);
+    auto encoder_out = model.encoder()(features);
+
+    TDTBeamSearchOptions opts;
+    opts.beam_width = 4;
+    opts.pieces = &tokenizer.pieces();
+
+    auto ts_results =
+        tdt_beam_decode_with_timestamps(model, encoder_out, cfg.durations, opts);
+    ASSERT_FALSE(ts_results.empty());
+    ASSERT_FALSE(ts_results[0].empty());
+
+    // Verify timestamps are valid
+    for (const auto &tok : ts_results[0]) {
+        EXPECT_GE(tok.start_frame, 0);
+        EXPECT_GE(tok.end_frame, tok.start_frame);
+        EXPECT_GT(tok.confidence, 0.0f);
+        EXPECT_LE(tok.confidence, 1.0f);
+        EXPECT_NE(tok.token_id, 1024); // no blank tokens
+    }
+
+    // Verify timestamps are monotonically non-decreasing
+    for (size_t i = 1; i < ts_results[0].size(); ++i) {
+        EXPECT_GE(ts_results[0][i].start_frame,
+                   ts_results[0][i - 1].start_frame);
+    }
+
+    // Group into words
+    auto words = group_timestamps(ts_results[0], tokenizer.pieces());
+    EXPECT_FALSE(words.empty());
+
+    std::cout << "  TDT Beam search word timestamps:" << std::endl;
+    for (const auto &w : words) {
+        std::cout << "    [" << std::fixed << std::setprecision(2) << w.start
+                  << "s - " << w.end << "s] (" << w.confidence << ") " << w.word
+                  << std::endl;
+    }
+}
+
+TEST(TDTBeamSearch, TranscriberAPITDTBeam) {
+    if (!has_model_weights() || !has_vocab() || !has_test_audio()) {
+        GTEST_SKIP() << "Model/vocab/audio not available";
+    }
+
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+
+    TranscribeOptions opts;
+    opts.decoder = Decoder::TDT_BEAM;
+    opts.beam_width = 4;
+
+    auto result = t.transcribe(model_path("2086-149220-0033.wav"), opts);
+    EXPECT_FALSE(result.text.empty());
+    EXPECT_FALSE(result.token_ids.empty());
+
+    std::cout << "  Transcriber TDT_BEAM: " << result.text << std::endl;
+
+    // With timestamps
+    opts.timestamps = true;
+    auto result_ts = t.transcribe(model_path("2086-149220-0033.wav"), opts);
+    EXPECT_FALSE(result_ts.text.empty());
+    EXPECT_FALSE(result_ts.word_timestamps.empty());
+}
+
+TEST(TDTBeamSearch, BeamWidth1) {
+    if (!has_model_weights() || !has_vocab() || !has_test_audio()) {
+        GTEST_SKIP() << "Model/vocab/audio not available";
+    }
+
+    auto cfg = make_110m_config();
+    ParakeetTDTCTC model(cfg);
+    auto weights = axiom::io::safetensors::load(model_path("model.safetensors"));
+    model.load_state_dict(weights, "", false);
+
+    Tokenizer tokenizer;
+    tokenizer.load(model_path("vocab.txt"));
+
+    auto audio = read_audio(model_path("2086-149220-0033.wav"));
+    auto features = preprocess_audio(audio.samples);
+    auto encoder_out = model.encoder()(features);
+
+    TDTBeamSearchOptions opts;
+    opts.beam_width = 1;
+    opts.pieces = &tokenizer.pieces();
+
+    auto beam_tokens = tdt_beam_decode(model, encoder_out, cfg.durations, opts);
+    ASSERT_FALSE(beam_tokens.empty());
+    ASSERT_FALSE(beam_tokens[0].empty());
+
+    std::string beam_text = tokenizer.decode(beam_tokens[0]);
+    EXPECT_FALSE(beam_text.empty());
+
+    std::cout << "  TDT Beam (width=1): " << beam_text << std::endl;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════════════════════════════
 

@@ -22,6 +22,7 @@ static void print_usage(const char *prog) {
         << "  --ctc          Use CTC greedy decoder (default: TDT)\n"
         << "  --tdt          Use TDT decoder\n"
         << "  --ctc-beam     Use CTC beam search decoder\n"
+        << "  --tdt-beam     Use TDT beam search decoder\n"
         << "  --beam-width N Beam width for beam search (default: 8)\n"
         << "  --lm PATH      ARPA language model for beam search\n"
         << "  --lm-weight N  LM interpolation weight (default: 0.5)\n"
@@ -56,7 +57,7 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
                             const std::vector<std::string> &boost_phrases = {},
                             float boost_score = 5.0f, bool use_ctc_beam = false,
                             int beam_width = 8, const std::string &lm_path = "",
-                            float lm_weight = 0.5f) {
+                            float lm_weight = 0.5f, bool use_tdt_beam = false,
                             const std::string &vad_weights_path = {},
                             float vad_threshold = 0.5f) {
     using namespace parakeet;
@@ -167,7 +168,7 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
 
     // Load LM if beam search with LM requested
     ArpaLM arpa_lm;
-    if (use_ctc_beam && !lm_path.empty()) {
+    if ((use_ctc_beam || use_tdt_beam) && !lm_path.empty()) {
         arpa_lm.load(lm_path);
         std::cout << "LM loaded: " << arpa_lm.size() << " n-grams, order "
                   << arpa_lm.order() << std::endl;
@@ -177,7 +178,26 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
     std::vector<std::vector<int>> token_ids;
     std::vector<std::vector<TimestampedToken>> timestamped_tokens;
 
-    if (use_ctc_beam) {
+    if (use_tdt_beam) {
+        TDTBeamSearchOptions tdt_bs_opts;
+        tdt_bs_opts.beam_width = beam_width;
+        tdt_bs_opts.lm = arpa_lm.loaded() ? &arpa_lm : nullptr;
+        tdt_bs_opts.lm_weight = lm_weight;
+        tdt_bs_opts.pieces = tokenizer.loaded() ? &tokenizer.pieces() : nullptr;
+        if (show_timestamps) {
+            timestamped_tokens = tdt_beam_decode_with_timestamps(
+                model, encoder_out, cfg.durations, tdt_bs_opts);
+            token_ids.resize(timestamped_tokens.size());
+            for (size_t b = 0; b < timestamped_tokens.size(); ++b)
+                for (const auto &t : timestamped_tokens[b])
+                    token_ids[b].push_back(t.token_id);
+        } else {
+            token_ids =
+                tdt_beam_decode(model, encoder_out, cfg.durations, tdt_bs_opts);
+        }
+        std::cout << "Decoder: TDT beam (width=" << beam_width
+                  << (arpa_lm.loaded() ? ", +LM" : "") << ")" << std::endl;
+    } else if (use_ctc_beam) {
         auto log_probs = model.ctc_decoder()(encoder_out);
         auto cpu_lp = log_probs.cpu();
         BeamSearchOptions bs_opts;
@@ -342,14 +362,13 @@ static int run_tdt_ctc_110m_batch(
 
 // ─── TDT 600M mode ──────────────────────────────────────────────────────────
 
-static int run_tdt_600m(const std::string &weights_path,
-                        const std::string &audio_path,
-                        const std::string &vocab_path, bool use_gpu,
-                        bool use_fp16, bool show_timestamps,
-                        const std::vector<std::string> &boost_phrases = {},
-                        float boost_score = 5.0f,
-                        const std::string &vad_weights_path = {},
-                        float vad_threshold = 0.5f) {
+static int run_tdt_600m(
+    const std::string &weights_path, const std::string &audio_path,
+    const std::string &vocab_path, bool use_gpu, bool use_fp16,
+    bool show_timestamps, const std::vector<std::string> &boost_phrases = {},
+    float boost_score = 5.0f, bool use_tdt_beam = false, int beam_width = 4,
+    const std::string &lm_path = "", float lm_weight = 0.5f,
+    const std::string &vad_weights_path = {}, float vad_threshold = 0.5f) {
     using namespace parakeet;
     using Clock = std::chrono::high_resolution_clock;
 
@@ -434,12 +453,40 @@ static int run_tdt_600m(const std::string &weights_path,
                   << trie.size() << " trie nodes" << std::endl;
     }
 
+    // Load LM if beam search with LM requested
+    ArpaLM arpa_lm;
+    if (use_tdt_beam && !lm_path.empty()) {
+        arpa_lm.load(lm_path);
+        std::cout << "LM loaded: " << arpa_lm.size() << " n-grams, order "
+                  << arpa_lm.order() << std::endl;
+    }
+
     std::vector<std::vector<int>> token_ids;
     std::vector<std::vector<TimestampedToken>> timestamped_tokens;
 
     int blank_id = cfg.prediction.vocab_size - 1;
 
-    if (show_timestamps) {
+    if (use_tdt_beam) {
+        TDTBeamSearchOptions tdt_bs_opts;
+        tdt_bs_opts.beam_width = beam_width;
+        tdt_bs_opts.blank_id = blank_id;
+        tdt_bs_opts.lm = arpa_lm.loaded() ? &arpa_lm : nullptr;
+        tdt_bs_opts.lm_weight = lm_weight;
+        tdt_bs_opts.pieces = tokenizer.loaded() ? &tokenizer.pieces() : nullptr;
+        if (show_timestamps) {
+            timestamped_tokens = tdt_beam_decode_with_timestamps(
+                model, encoder_out, cfg.durations, tdt_bs_opts);
+            token_ids.resize(timestamped_tokens.size());
+            for (size_t b = 0; b < timestamped_tokens.size(); ++b)
+                for (const auto &t : timestamped_tokens[b])
+                    token_ids[b].push_back(t.token_id);
+        } else {
+            token_ids =
+                tdt_beam_decode(model, encoder_out, cfg.durations, tdt_bs_opts);
+        }
+        std::cout << "Decoder: TDT beam (width=" << beam_width
+                  << (arpa_lm.loaded() ? ", +LM" : "") << ")" << std::endl;
+    } else if (show_timestamps) {
         timestamped_tokens =
             use_boost ? tdt_greedy_decode_with_timestamps_boosted(
                             model, encoder_out, cfg.durations, trie,
@@ -935,6 +982,7 @@ int main(int argc, char *argv[]) {
         std::string model_type = "tdt-ctc-110m";
         bool use_ctc = false;
         bool use_ctc_beam = false;
+        bool use_tdt_beam = false;
         bool use_gpu = false;
         bool use_fp16 = false;
         bool show_timestamps = false;
@@ -965,6 +1013,11 @@ int main(int argc, char *argv[]) {
             } else if (arg == "--ctc-beam") {
                 use_ctc_beam = true;
                 use_ctc = false;
+                use_tdt_beam = false;
+            } else if (arg == "--tdt-beam") {
+                use_tdt_beam = true;
+                use_ctc = false;
+                use_ctc_beam = false;
             } else if (arg == "--beam-width" && i + 1 < argc) {
                 beam_width = std::stoi(argv[++i]);
             } else if (arg == "--lm" && i + 1 < argc) {
@@ -1026,11 +1079,11 @@ int main(int argc, char *argv[]) {
                     use_fp16, show_timestamps, boost_phrases, boost_score,
                     vad_weights_path, vad_threshold);
             }
-            return run_tdt_ctc_110m(weights_path, audio_path, vocab_path,
-                                    features_path, use_ctc, use_gpu, use_fp16,
-                                    show_timestamps, boost_phrases, boost_score,
-                                    use_ctc_beam, beam_width, lm_path, lm_weight,
-                                    vad_weights_path, vad_threshold);
+            return run_tdt_ctc_110m(
+                weights_path, audio_path, vocab_path, features_path, use_ctc,
+                use_gpu, use_fp16, show_timestamps, boost_phrases, boost_score,
+                use_ctc_beam, beam_width, lm_path, lm_weight, use_tdt_beam,
+                vad_weights_path, vad_threshold);
         } else if (model_type == "tdt-600m") {
             if (audio_paths.size() > 1) {
                 return run_tdt_600m_batch(weights_path, audio_paths, vocab_path,
@@ -1040,7 +1093,8 @@ int main(int argc, char *argv[]) {
             }
             return run_tdt_600m(weights_path, audio_path, vocab_path, use_gpu,
                                 use_fp16, show_timestamps, boost_phrases,
-                                boost_score, vad_weights_path, vad_threshold);
+                                boost_score, use_tdt_beam, beam_width, lm_path,
+                                lm_weight, vad_weights_path, vad_threshold);
         } else if (model_type == "rnnt-600m") {
             return run_rnnt_600m(weights_path, audio_path, vocab_path, use_gpu,
                                  use_fp16, show_timestamps);

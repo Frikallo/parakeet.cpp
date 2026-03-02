@@ -53,6 +53,7 @@ add_library(parakeet_lib
     src/decode/vocab.cpp
     src/decode/phrase_boost.cpp
     src/decode/beam_search.cpp
+    src/decode/tdt_beam_search.cpp
     src/decode/arpa_lm.cpp
     src/api/transcribe.cpp
     src/api/diarize.cpp
