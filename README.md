@@ -32,526 +32,38 @@ auto result = t.transcribe("audio.wav");
 std::cout << result.text << std::endl;
 ```
 
-Choose decoder at call site:
-```cpp
-auto result = t.transcribe("audio.wav", parakeet::Decoder::CTC);       // fast greedy
-auto result = t.transcribe("audio.wav", parakeet::Decoder::TDT);       // better accuracy (default)
-auto result = t.transcribe("audio.wav", parakeet::Decoder::CTC_BEAM);  // CTC beam search
-auto result = t.transcribe("audio.wav", parakeet::Decoder::TDT_BEAM);  // TDT beam search
-```
-
-Batch transcription (multiple files in one forward pass):
-```cpp
-auto results = t.transcribe_batch({"audio1.wav", "audio2.wav", "audio3.wav"});
-for (const auto &r : results)
-    std::cout << r.text << std::endl;
-```
-
-Word-level timestamps with confidence:
-```cpp
-auto result = t.transcribe("audio.wav", parakeet::Decoder::TDT, /*timestamps=*/true);
-for (const auto &w : result.word_timestamps) {
-    std::cout << "[" << w.start << "s - " << w.end << "s] "
-              << "(" << w.confidence << ") " << w.word << std::endl;
-}
-// [0.24s - 0.48s] (0.98) Well
-// [0.48s - 0.56s] (0.95) I
-// [0.56s - 0.96s] (0.87) don't
-```
-
-VAD preprocessing (skip silence, reduce compute):
-```cpp
-t.enable_vad("silero_vad_v5.safetensors");
-auto result = t.transcribe("audio.wav");  // silence auto-filtered, timestamps remapped
-```
-
-Phrase boosting for domain-specific vocabulary:
-```cpp
-parakeet::TranscribeOptions opts;
-opts.boost_phrases = {"Phoebe", "portrait"};
-opts.boost_score = 5.0f;  // log-prob bias (default)
-auto result = t.transcribe("audio.wav", opts);
-```
-
-Beam search with optional n-gram LM (CTC or TDT):
-```cpp
-parakeet::TranscribeOptions opts;
-opts.decoder = parakeet::Decoder::CTC_BEAM;  // or TDT_BEAM
-opts.beam_width = 8;
-opts.lm_path = "lm.arpa";    // optional ARPA language model
-opts.lm_weight = 0.5f;       // LM interpolation weight
-auto result = t.transcribe("audio.wav", opts);
-```
-
-## High-Level API
-
-### Offline Transcription (TDT-CTC 110M)
-
-```cpp
-parakeet::Transcriber t("model.safetensors", "vocab.txt");
-t.to_gpu();
-auto result = t.transcribe("audio.wav");
-```
-
-### Batch Transcription
-
-Process multiple audio files in a single batched encoder forward pass for better GPU utilization:
-
-```cpp
-parakeet::Transcriber t("model.safetensors", "vocab.txt");
-t.to_gpu();
-
-auto results = t.transcribe_batch({"audio1.wav", "audio2.wav", "audio3.wav"});
-for (size_t i = 0; i < results.size(); ++i)
-    std::cout << results[i].text << std::endl;
-
-// Works with options too
-parakeet::TranscribeOptions opts;
-opts.timestamps = true;
-auto results = t.transcribe_batch({"a.wav", "b.wav"}, opts);
-```
-
-Also available on `TDTTranscriber` for the 600M model, via C API (`parakeet_transcriber_transcribe_batch`), and the CLI (multiple positional args).
-
-### Offline Transcription (TDT 600M Multilingual)
-
-```cpp
-parakeet::TDTTranscriber t("model.safetensors", "vocab.txt",
-                            parakeet::make_tdt_600m_config());
-auto result = t.transcribe("audio.wav");
-```
-
-### Streaming Transcription (EOU 120M)
-
-```cpp
-parakeet::StreamingTranscriber t("model.safetensors", "vocab.txt",
-                                  parakeet::make_eou_120m_config());
-
-// Feed audio chunks (e.g., from microphone)
-while (auto chunk = get_audio_chunk()) {
-    auto text = t.transcribe_chunk(chunk);
-    if (!text.empty()) std::cout << text << std::flush;
-}
-std::cout << t.get_text() << std::endl;
-```
-
-### Streaming Transcription (Nemotron 600M)
-
-```cpp
-// Latency modes: 0=80ms, 1=160ms, 6=560ms, 13=1120ms
-auto cfg = parakeet::make_nemotron_600m_config(/*latency_frames=*/1);
-parakeet::NemotronTranscriber t("model.safetensors", "vocab.txt", cfg);
-
-while (auto chunk = get_audio_chunk()) {
-    auto text = t.transcribe_chunk(chunk);
-    if (!text.empty()) std::cout << text << std::flush;
-}
-```
-
-### Speaker Diarization (Sortformer 117M)
-
-Identify who spoke when — detects up to 4 speakers with per-frame activity probabilities:
-
-```cpp
-parakeet::Sortformer model(parakeet::make_sortformer_117m_config());
-model.load_state_dict(axiom::io::safetensors::load("sortformer.safetensors"));
-
-auto audio = parakeet::read_audio("meeting.wav");
-auto features = parakeet::preprocess_audio(audio.samples, {.normalize = false});
-auto segments = model.diarize(features);
-
-for (const auto &seg : segments) {
-    std::cout << "Speaker " << seg.speaker_id
-              << ": [" << seg.start << "s - " << seg.end << "s]" << std::endl;
-}
-// Speaker 0: [0.56s - 2.96s]
-// Speaker 0: [3.36s - 4.40s]
-// Speaker 1: [4.80s - 6.24s]
-```
-
-Streaming diarization with arrival-order speaker tracking:
-
-```cpp
-parakeet::Sortformer model(parakeet::make_sortformer_117m_config());
-model.load_state_dict(axiom::io::safetensors::load("sortformer.safetensors"));
-
-parakeet::EncoderCache enc_cache;
-parakeet::AOSCCache aosc_cache(4);  // max 4 speakers
-
-while (auto chunk = get_audio_chunk()) {
-    auto features = parakeet::preprocess_audio(chunk, {.normalize = false});
-    auto segments = model.diarize_chunk(features, enc_cache, aosc_cache);
-    for (const auto &seg : segments) {
-        std::cout << "Speaker " << seg.speaker_id
-                  << ": [" << seg.start << "s - " << seg.end << "s]" << std::endl;
-    }
-}
-```
-
-### Voice Activity Detection (Silero VAD)
-
-Strip silence before ASR to reduce encoder compute and improve accuracy. Timestamps are automatically remapped to the original timeline.
-
-```cpp
-parakeet::Transcriber t("model.safetensors", "vocab.txt");
-t.enable_vad("silero_vad_v5.safetensors");
-t.to_gpu();
-
-parakeet::TranscribeOptions opts;
-opts.use_vad = true;
-opts.timestamps = true;
-auto result = t.transcribe("audio.wav", opts);
-// Timestamps refer to the original audio, not the compressed version
-```
-
-Also available as a standalone detector:
-```cpp
-parakeet::audio::SileroVAD vad("silero_vad_v5.safetensors");
-auto segments = vad.detect(audio.samples, 16000);
-// segments[i].start_sample, segments[i].end_sample
-
-// Collect speech-only audio (silence removed)
-auto speech = parakeet::audio::collect_speech(audio.samples, segments);
-```
-
-Works with all transcriber types (`Transcriber`, `TDTTranscriber`, `DiarizedTranscriber`).
-
-### Diarized Transcription (ASR + Sortformer)
-
-Combines ASR word timestamps with Sortformer speaker diarization to produce speaker-attributed words:
-
-```cpp
-parakeet::DiarizedTranscriber dt("model.safetensors", "sortformer.safetensors",
-                                  "vocab.txt");
-dt.to_gpu();  // optional
-
-auto result = dt.transcribe("meeting.wav");
-```
-
-Consecutive words from the same speaker are grouped automatically:
-```
-Speaker 0 [0.08s - 2.56s]: Good morning, how can I help you today?
-Speaker 1 [2.88s - 5.44s]: Hi, I'd like to check on my order status please.
-Speaker 0 [5.76s - 8.32s]: Sure, can you give me your order number?
-Speaker 1 [8.64s - 10.24s]: It's four five six seven eight.
-```
-
-Each `DiarizedWord` also carries individual timing and confidence:
-```cpp
-for (const auto &w : result.words) {
-    // w.speaker_id, w.start, w.end, w.confidence, w.word
-}
-```
-
-Standalone alignment is also available if you run ASR and Sortformer separately:
-
-```cpp
-auto diarized = parakeet::diarize_transcription(asr_result.word_timestamps, segments);
-```
-
-## C API (FFI)
-
-A flat `extern "C"` API for calling parakeet.cpp from Python, Swift, Go, Rust, or any language with C FFI support.
-
-```c
-#include <parakeet/api/parakeet_c.h>
-
-// Create transcriber
-parakeet_transcriber_t t = parakeet_transcriber_create(
-    "model.safetensors", "vocab.txt", NULL);
-parakeet_transcriber_to_gpu(t);
-
-// Transcribe
-parakeet_result_t r = parakeet_transcriber_transcribe_file(t, "audio.wav", NULL);
-printf("%s\n", parakeet_result_text(r));
-
-// Word timestamps
-parakeet_options_t opts = parakeet_options_create();
-parakeet_options_set_timestamps(opts, 1);
-parakeet_result_t r2 = parakeet_transcriber_transcribe_file(t, "audio.wav", opts);
-for (size_t i = 0; i < parakeet_result_word_count(r2); i++) {
-    parakeet_word_timestamp_t w = parakeet_result_word_at(r2, i);
-    printf("[%.2fs-%.2fs] %s\n", w.start, w.end, w.word);
-}
-
-// Cleanup
-parakeet_result_free(r);
-parakeet_result_free(r2);
-parakeet_options_free(opts);
-parakeet_transcriber_free(t);
-```
-
-VAD is available through the C API:
-```c
-// Enable VAD on any transcriber
-parakeet_transcriber_enable_vad(t, "silero_vad_v5.safetensors");
-
-// Or use standalone VAD
-parakeet_vad_t vad = parakeet_vad_create("silero_vad_v5.safetensors");
-parakeet_speech_segment_t *segments;
-int count;
-parakeet_vad_detect(vad, audio, parakeet_vad_config_default(), &segments, &count);
-parakeet_speech_segments_free(segments);
-parakeet_vad_destroy(vad);
-```
-
-All 5 transcriber types are wrapped (`parakeet_transcriber_*`, `parakeet_tdt_transcriber_*`, `parakeet_streaming_transcriber_*`, `parakeet_nemotron_transcriber_*`, `parakeet_diarized_transcriber_*`), plus audio I/O, VAD, and result accessors. Error handling uses a thread-local error string:
-
-```c
-parakeet_transcriber_t t = parakeet_transcriber_create("bad_path", "vocab.txt", NULL);
-if (!t) {
-    printf("Error: %s\n", parakeet_last_error());
-}
-```
-
-## Low-Level API
-
-For full control over the pipeline:
-
-**CTC** (English, punctuation & capitalization):
-```cpp
-auto cfg = parakeet::make_110m_config();
-parakeet::ParakeetTDTCTC model(cfg);
-model.load_state_dict(axiom::io::safetensors::load("model.safetensors"));
-
-auto audio = parakeet::read_audio("audio.wav");
-auto features = parakeet::preprocess_audio(audio.samples);
-auto encoder_out = model.encoder()(features);
-
-auto log_probs = model.ctc_decoder()(encoder_out);
-auto tokens = parakeet::ctc_greedy_decode(log_probs);
-
-parakeet::Tokenizer tokenizer;
-tokenizer.load("vocab.txt");
-std::cout << tokenizer.decode(tokens[0]) << std::endl;
-```
-
-**TDT** (Token-and-Duration Transducer):
-```cpp
-auto encoder_out = model.encoder()(features);
-auto tokens = parakeet::tdt_greedy_decode(model, encoder_out, cfg.durations);
-std::cout << tokenizer.decode(tokens[0]) << std::endl;
-```
-
-**Timestamps with confidence** (CTC, TDT, or RNNT):
-```cpp
-// CTC timestamps
-auto ts = parakeet::ctc_greedy_decode_with_timestamps(log_probs);
-
-// TDT timestamps
-auto ts = parakeet::tdt_greedy_decode_with_timestamps(model, encoder_out, cfg.durations);
-
-// RNNT timestamps
-auto ts = parakeet::rnnt_greedy_decode_with_timestamps(model, encoder_out);
-
-// Group into word-level timestamps (confidence = min token confidence per word)
-auto words = parakeet::group_timestamps(ts[0], tokenizer.pieces());
-for (const auto &w : words) {
-    // w.confidence is in [0, 1]
-    std::cout << w.word << " (" << w.confidence << ")" << std::endl;
-}
-```
-
-**CTC beam search** (with optional LM):
-```cpp
-// Basic beam search
-parakeet::BeamSearchOptions bs_opts;
-bs_opts.beam_width = 8;
-auto tokens = parakeet::ctc_beam_decode(log_probs, bs_opts);
-
-// With ARPA language model
-parakeet::ArpaLM lm;
-lm.load("lm.arpa");
-bs_opts.lm = &lm;
-bs_opts.lm_weight = 0.5f;
-bs_opts.pieces = &tokenizer.pieces();  // needed for word-boundary LM scoring
-auto tokens = parakeet::ctc_beam_decode(log_probs, bs_opts);
-
-// With timestamps
-auto ts = parakeet::ctc_beam_decode_with_timestamps(log_probs, bs_opts);
-```
-
-**TDT beam search** (with optional LM):
-```cpp
-parakeet::TDTBeamSearchOptions tdt_opts;
-tdt_opts.beam_width = 4;
-auto tokens = parakeet::tdt_beam_decode(model, encoder_out, cfg.durations, tdt_opts);
-
-// With ARPA language model
-parakeet::ArpaLM lm;
-lm.load("lm.arpa");
-tdt_opts.lm = &lm;
-tdt_opts.lm_weight = 0.5f;
-tdt_opts.pieces = &tokenizer.pieces();
-auto tokens = parakeet::tdt_beam_decode(model, encoder_out, cfg.durations, tdt_opts);
-
-// With timestamps
-auto ts = parakeet::tdt_beam_decode_with_timestamps(model, encoder_out, cfg.durations, tdt_opts);
-```
-
-**Phrase boosting** (context biasing):
-```cpp
-// Build a trie from boost phrases
-parakeet::ContextTrie trie;
-trie.build({"Phoebe", "portrait"}, tokenizer);
-
-// Boosted CTC decode — biases log-probs toward trie-matched tokens
-auto tokens = parakeet::ctc_greedy_decode_boosted(log_probs, trie, /*boost_score=*/5.0f);
-
-// Boosted TDT decode
-auto tokens = parakeet::tdt_greedy_decode_boosted(model, encoder_out, cfg.durations, trie);
-
-// Also available with timestamps
-auto ts = parakeet::ctc_greedy_decode_with_timestamps_boosted(log_probs, trie);
-auto ts = parakeet::tdt_greedy_decode_with_timestamps_boosted(model, encoder_out, cfg.durations, trie);
-```
-
-**GPU acceleration** (Metal):
-```cpp
-model.to(axiom::Device::GPU);
-auto features_gpu = features.gpu();
-auto encoder_out = model.encoder()(features_gpu);
-
-// Decode on CPU
-auto tokens = parakeet::ctc_greedy_decode(
-    model.ctc_decoder()(encoder_out).cpu()
-);
-```
-
-**FP16 inference** (half-precision):
-```cpp
-model.to(axiom::DType::Float16);  // cast all weights to fp16
-model.to(axiom::Device::GPU);
-auto features_gpu = features.half().gpu();  // half() before gpu()
-auto encoder_out = model.encoder()(features_gpu);
-```
-
-## CLI
-
-```
-Usage: parakeet <model.safetensors> <audio.wav> [audio2.wav ...] [options]
-
-Model types:
-  --model TYPE     Model type (default: tdt-ctc-110m)
-                   Types: tdt-ctc-110m, tdt-600m, eou-120m,
-                          nemotron-600m, sortformer, diarized
-
-Decoder options:
-  --ctc            Use CTC greedy decoder (default: TDT)
-  --tdt            Use TDT decoder
-  --ctc-beam       Use CTC beam search decoder
-  --tdt-beam       Use TDT beam search decoder
-  --beam-width N   Beam width for beam search (default: 8)
-  --lm PATH        ARPA language model for beam search
-  --lm-weight N    LM interpolation weight (default: 0.5)
-
-Phrase boost:
-  --boost PHRASE   Boost a phrase (repeatable)
-  --boost-score N  Boost score (default: 5.0)
-
-Other options:
-  --vocab PATH     SentencePiece vocab file
-  --sortformer-weights PATH  Sortformer weights (for diarized mode)
-  --gpu            Run on Metal GPU
-  --fp16           Use half-precision inference (less memory, requires --gpu)
-  --timestamps     Show word-level timestamps
-  --streaming      Use streaming mode (eou/nemotron models)
-  --latency N      Right context frames for nemotron (0/1/6/13)
-  --vad PATH       Enable Silero VAD with given weights file
-  --vad-threshold F  VAD speech threshold (default: 0.5)
-  --features PATH  Load pre-computed features from .npy file
-
-Batch mode:
-  Multiple audio files use batched encoder inference.
-  Supported for tdt-ctc-110m and tdt-600m models.
-```
-
-Examples:
-
-```bash
-# Basic transcription (TDT decoder, default)
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt
-
-# CTC decoder
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --ctc
-
-# GPU acceleration
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --gpu
-
-# GPU + FP16 (half memory usage)
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --gpu --fp16
-
-# Word-level timestamps
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --timestamps
-
-# CTC beam search
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --ctc-beam --beam-width 16
-
-# TDT beam search
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --tdt-beam --beam-width 4
-
-# CTC beam search with ARPA language model
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt \
-  --ctc-beam --lm lm.arpa --lm-weight 0.5
-
-# Phrase boosting for domain-specific terms
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt \
-  --boost "Phoebe" --boost "portrait" --boost-score 5.0
-
-# Batch inference (multiple files in one forward pass)
-./build/parakeet model.safetensors audio1.wav audio2.wav audio3.wav --vocab vocab.txt --gpu
-
-# 600M multilingual TDT model
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --model tdt-600m
-
-# Streaming with EOU
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --model eou-120m
-
-# Nemotron streaming with configurable latency
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt --model nemotron-600m --latency 6
-
-# Speaker diarization
-./build/parakeet sortformer.safetensors meeting.wav --model sortformer
-
-# VAD preprocessing (strip silence before ASR)
-./build/parakeet model.safetensors audio.wav --vocab vocab.txt \
-  --vad silero_vad_v5.safetensors --timestamps
-
-# Diarized transcription (ASR + Sortformer)
-./build/parakeet model.safetensors meeting.wav --model diarized \
-  --sortformer-weights sortformer.safetensors --vocab vocab.txt
-```
-
-## Requirements
-
-- C++20 compiler (Clang 14+ or GCC 12+)
-- CMake 3.20+
-- macOS 13+ for Metal GPU acceleration
-
-## Setup
-
-### Build
-
-Axiom is the only dependency (included as a submodule).
+## Features
+
+- **Multiple decoders** — CTC greedy, TDT greedy, CTC beam search, TDT beam search (switch at call site)
+- **Word timestamps** — Per-word start/end times and confidence scores on all decoders
+- **Beam search + LM** — CTC and TDT beam search with optional ARPA n-gram language model fusion
+- **Phrase boosting** — Context biasing via token-level trie for domain-specific vocabulary
+- **Batch transcription** — Multiple files in one batched encoder forward pass
+- **VAD preprocessing** — Silero VAD strips silence before ASR; timestamps auto-remapped
+- **GPU acceleration** — Metal via axiom's MPSGraph compiler (96x speedup on Apple Silicon)
+- **FP16 inference** — Half-precision weights and compute (~2x memory reduction)
+- **Streaming** — EOU and Nemotron models with chunked audio input
+- **Speaker diarization** — Sortformer (up to 4 speakers), combinable with ASR for speaker-attributed words
+- **C API** — Flat `extern "C"` FFI for Python, Swift, Go, Rust, and other languages
+- **Multi-format audio** — WAV, FLAC, MP3, OGG with automatic resampling
+
+See [examples/](examples/) for code demonstrating each feature.
+
+## Build
 
 ```bash
 git clone --recursive https://github.com/frikallo/parakeet.cpp
 cd parakeet.cpp
 make build
-```
-
-### Test
-
-```bash
 make test
 ```
 
-### Convert Weights
+Requirements: C++20 (Clang 14+ or GCC 12+), CMake 3.20+, macOS 13+ for Metal GPU.
 
-Download a NeMo checkpoint from NVIDIA and convert to safetensors:
+## Convert Weights
 
 ```bash
-# Download from HuggingFace (requires pip install huggingface_hub)
+# Download from HuggingFace
 huggingface-cli download nvidia/parakeet-tdt_ctc-110m --include "*.nemo" --local-dir .
 
 # Convert to safetensors
@@ -559,47 +71,34 @@ pip install safetensors torch
 python scripts/convert_nemo.py parakeet-tdt_ctc-110m.nemo -o model.safetensors
 ```
 
-The converter supports all model types via the `--model` flag:
+The converter supports all model types: `110m-tdt-ctc` (default), `600m-tdt`, `eou-120m`, `nemotron-600m`, `sortformer`.
 
 ```bash
-# 110M TDT-CTC (default)
-python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model 110m-tdt-ctc
-
-# 600M multilingual TDT
 python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model 600m-tdt
-
-# 120M EOU streaming
-python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model eou-120m
-
-# 600M Nemotron streaming
-python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model nemotron-600m
-
-# 117M Sortformer diarization
-python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model sortformer
 ```
 
-Also supports raw `.ckpt` files and inspection:
+Silero VAD weights:
 ```bash
-python scripts/convert_nemo.py model_weights.ckpt -o model.safetensors
-python scripts/convert_nemo.py --dump model.nemo  # inspect checkpoint keys
-```
-
-**Silero VAD weights** (for `--vad` preprocessing):
-```bash
-pip install safetensors torch
 python scripts/convert_silero_vad.py -o silero_vad_v5.safetensors
 ```
-Downloads Silero VAD v5 from torch.hub and converts to safetensors (~1.2MB).
 
-### Download Vocab
+## Examples
 
-Grab the SentencePiece vocab from the same HuggingFace repo. The file is inside the `.nemo` archive, or download directly:
-
-```bash
-# Extract from .nemo
-tar xf parakeet-tdt_ctc-110m.nemo ./tokenizer.model
-# or use the vocab.txt from the HF files page
-```
+| Example | Description |
+|---------|-------------|
+| [basic](examples/basic/) | Simplest transcription (~20 lines) |
+| [timestamps](examples/timestamps/) | Word/token timestamps with confidence |
+| [beam-search](examples/beam-search/) | CTC/TDT beam search with optional ARPA LM |
+| [phrase-boost](examples/phrase-boost/) | Context biasing for domain vocabulary |
+| [batch](examples/batch/) | Batch transcription of multiple files |
+| [vad](examples/vad/) | Standalone VAD and ASR+VAD preprocessing |
+| [gpu](examples/gpu/) | Metal GPU + FP16 with timing comparison |
+| [stream](examples/stream/) | EOU streaming transcription |
+| [nemotron](examples/nemotron/) | Nemotron streaming with latency modes |
+| [diarize](examples/diarize/) | Sortformer speaker diarization |
+| [diarized-transcription](examples/diarized-transcription/) | ASR + diarization combined |
+| [c-api](examples/c-api/) | Pure C99 FFI usage |
+| [cli](examples/cli/) | Full CLI with all options |
 
 ## Using as a Library
 
@@ -613,8 +112,6 @@ target_link_libraries(myapp PRIVATE Parakeet::parakeet)
 ```
 
 ### CMake `add_subdirectory`
-
-Add parakeet.cpp as a subdirectory or git submodule:
 
 ```cmake
 add_subdirectory(third_party/parakeet.cpp)
@@ -680,68 +177,49 @@ Measured on Apple M3 16GB with simulated audio input (`Tensor::randn`). Times ar
 
 GPU acceleration powered by axiom's Metal graph compiler which fuses the full encoder into optimized MPSGraph operations.
 
-### Running benchmarks
-
 ```bash
-# Full suite
 make bench ARGS="--110m=models/model.safetensors --tdt-600m=models/tdt.safetensors"
-
-# Single model
-make bench-single ARGS="--110m=models/model.safetensors --benchmark_filter=110m"
-
-# Markdown table output
-./build/parakeet_bench --110m=models/model.safetensors --markdown
-
-# Skip GPU benchmarks
-./build/parakeet_bench --110m=models/model.safetensors --no-gpu
 ```
-
-Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. All Google Benchmark flags (`--benchmark_filter`, `--benchmark_format=json`, `--benchmark_repetitions=N`) are passed through.
 
 ## Roadmap
 
 ### Tier 1 — High Impact
 
-- [x] **Confidence scores** — Per-token and per-word confidence (0.0–1.0) from token log-probs. Available on all decoders (CTC, TDT, RNNT, streaming).
-- [x] **Phrase boosting (context biasing)** — Token-level trie over a boost list. Bias log-probs during decode for domain-specific vocabulary (product names, jargon, proper nouns). Works with greedy decode.
-- [x] **Beam search decoding** — CTC prefix beam search and TDT time-synchronous beam search with configurable width. `Decoder::CTC_BEAM` and `Decoder::TDT_BEAM` with `beam_width` option.
-- [x] **N-gram LM shallow fusion** — Load ARPA language models, score partial hypotheses at word boundaries during CTC or TDT beam search. `ArpaLM` with trie-based n-gram storage and backoff.
+- [x] **Confidence scores** — Per-token and per-word confidence from token log-probs
+- [x] **Phrase boosting** — Token-level trie context biasing during decode
+- [x] **Beam search** — CTC prefix beam search and TDT time-synchronous beam search
+- [x] **N-gram LM fusion** — ARPA language models scored at word boundaries
 
 ### Audio & I/O
 
-- [x] **Multi-format audio loading** — WAV (all formats), FLAC, MP3, OGG Vorbis via dr_libs + stb_vorbis. `read_audio(path)` auto-detects format.
-- [x] **Automatic resampling** — Windowed sinc interpolation (Kaiser, 16-tap, ~80dB stopband). Arbitrary rate conversion with GCD simplification.
-- [x] **Sample rate validation** — `preprocess_audio(AudioData)` validates sample rate matches config.
-- [x] **Load from memory buffer** — `read_audio(bytes, len)`, `read_audio(float*, n, rate)`, `read_audio(int16_t*, n, rate)`.
-- [x] **Extended WAV support** — All WAV formats via dr_wav (8/16/24/32-bit PCM, float, A-law, mu-law).
-- [ ] **Audio duration query** — `get_audio_duration(path)` without fully decoding the file. Read header only.
-- [ ] **Progress callbacks** — `transcribe(path, {.on_progress = callback})` for long files. Report preprocessing / encoder / decode stages.
-- [ ] **Streaming from raw PCM** — Helper to feed `int16_t*` or `float*` microphone buffers directly into `StreamingTranscriber` without manual Tensor construction.
+- [x] **Multi-format audio** — WAV, FLAC, MP3, OGG via dr_libs + stb_vorbis
+- [x] **Automatic resampling** — Windowed sinc interpolation (Kaiser, 16-tap)
+- [x] **Load from memory** — `read_audio(bytes, len)`, float/int16 buffers
+- [ ] **Audio duration query** — Header-only duration without full decode
+- [ ] **Progress callbacks** — Stage reporting for long files
+- [ ] **Streaming from raw PCM** — Direct microphone buffer feeding
 
 ### Tier 2 — Production Readiness
 
-- [x] **Diarized transcription** — Fuse Sortformer speaker segments with ASR word timestamps. `DiarizedTranscriber` composes ASR + Sortformer into speaker-attributed words.
-- [ ] **Long-form audio chunking** — Split audio >30s into overlapping windows, run encoder on each, merge transcriptions at overlap boundaries.
-- [x] **VAD (voice activity detection)** — Silero VAD v5 integration. Strips silence before ASR, remaps timestamps to original timeline. `enable_vad()` on all transcribers, standalone `SileroVAD` class, C API, CLI `--vad` flag.
-- [x] **Batch inference** — Pad + length-mask multiple audio files, batch through encoder and decoder. `transcribe_batch()` on `Transcriber` and `TDTTranscriber`. C API and CLI multi-file support.
-- [ ] **Neural LM rescoring** — N-best reranking with a Transformer LM after beam search.
+- [x] **Diarized transcription** — ASR + Sortformer → speaker-attributed words
+- [x] **VAD** — Silero VAD v5, standalone + ASR preprocessing
+- [x] **Batch inference** — Padded multi-file encoder forward pass
+- [ ] **Long-form chunking** — Overlapping windows for audio >30s
+- [ ] **Neural LM rescoring** — N-best reranking with Transformer LM
 
 ### Tier 3 — Ecosystem
 
-- [x] **C API** — Flat C interface (`parakeet_c.h`) for FFI from Python, Swift, Go, Rust. Wraps all 5 transcriber types, audio I/O, and result accessors behind opaque handles.
-- [x] **f16 inference** — Half-precision weights and compute. ~2x memory reduction. `--fp16` CLI flag, `to_half()` API, preserves axiom's lazy graph compilation.
-- [ ] **Model quantization** — INT8/INT4 weight quantization for mobile deployment.
-- [ ] **Hotword / wake word detection** — "Hey Parakeet" trigger phrase detection.
-- [ ] **Speaker embedding extraction** — Speaker verification from Sortformer intermediate layers or TitaNet.
+- [x] **C API** — Flat C interface for FFI from any language
+- [x] **FP16 inference** — Half-precision weights and compute
+- [ ] **Model quantization** — INT8/INT4 for mobile deployment
+- [ ] **Hotword detection** — Trigger phrase detection
+- [ ] **Speaker embeddings** — Speaker verification from Sortformer/TitaNet
 
 ## Notes
 
-- Audio: 16kHz mono WAV (16-bit PCM or 32-bit float)
-- Offline models have ~4-5 minute audio length limits; split longer files or use streaming models
-- Blank token ID is 1024 (110M) or 8192 (600M)
+- Audio: 16kHz mono (WAV, FLAC, MP3, OGG — auto-detected and resampled)
+- Offline models have ~4-5 minute audio length limits; use streaming models for longer audio
 - GPU acceleration requires Apple Silicon with Metal support
-- Timestamps use frame-level alignment: `frame * 0.08s` (8x subsampling × 160 hop / 16kHz). Confidence = `exp(max_log_prob)` per token, min-aggregated to word level
-- Sortformer diarization uses unnormalized features (`normalize = false`) — this differs from ASR models
 
 ## License
 

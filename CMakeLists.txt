@@ -19,6 +19,7 @@ include(CMakePackageConfigHelpers)
 option(PARAKEET_BUILD_CLI "Build the parakeet CLI binary" ON)
 option(PARAKEET_BUILD_TESTS "Build parakeet tests" ON)
 option(PARAKEET_BUILD_BENCHMARKS "Build parakeet benchmarks" OFF)
+option(PARAKEET_BUILD_EXAMPLES "Build parakeet examples" ON)
 option(BUILD_SHARED_LIBS "Build shared library instead of static" OFF)
 
 # ── Axiom ────────────────────────────────────────────────────────────────────
@@ -86,7 +87,7 @@ set_target_properties(parakeet_lib PROPERTIES
 
 # ── CLI binary ───────────────────────────────────────────────────────────────
 if(PARAKEET_BUILD_CLI)
-    add_executable(parakeet src/main.cpp)
+    add_executable(parakeet examples/cli/main.cpp)
     target_link_libraries(parakeet PRIVATE parakeet_lib)
 endif()
 
@@ -169,6 +170,11 @@ if(PARAKEET_BUILD_TESTS)
     add_test(NAME test_c_api COMMAND test_c_api)
 endif()
 
+# ── Examples ─────────────────────────────────────────────────────────────────
+if(PARAKEET_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
+
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 if(PARAKEET_BUILD_BENCHMARKS)
     add_executable(parakeet_bench src/bench.cpp)
@@ -181,6 +187,7 @@ message(STATUS "parakeet ${PROJECT_VERSION} configuration:")
 message(STATUS "  Build type:       ${CMAKE_BUILD_TYPE}")
 message(STATUS "  CLI:              ${PARAKEET_BUILD_CLI}")
 message(STATUS "  Tests:            ${PARAKEET_BUILD_TESTS}")
+message(STATUS "  Examples:         ${PARAKEET_BUILD_EXAMPLES}")
 message(STATUS "  Benchmarks:       ${PARAKEET_BUILD_BENCHMARKS}")
 message(STATUS "  Shared libs:      ${BUILD_SHARED_LIBS}")
 message(STATUS "  Install prefix:   ${CMAKE_INSTALL_PREFIX}")
