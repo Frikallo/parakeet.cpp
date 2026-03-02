@@ -19,8 +19,12 @@ static void print_usage(const char *prog) {
         << "                        eou-120m, nemotron-600m, sortformer,\n"
         << "                        diarized\n"
         << "\nDecoder options:\n"
-        << "  --ctc          Use CTC decoder (default: TDT)\n"
+        << "  --ctc          Use CTC greedy decoder (default: TDT)\n"
         << "  --tdt          Use TDT decoder\n"
+        << "  --ctc-beam     Use CTC beam search decoder\n"
+        << "  --beam-width N Beam width for beam search (default: 8)\n"
+        << "  --lm PATH      ARPA language model for beam search\n"
+        << "  --lm-weight N  LM interpolation weight (default: 0.5)\n"
         << "\nPhrase boost:\n"
         << "  --boost PHRASE   Boost a phrase (repeatable)\n"
         << "  --boost-score N  Boost score (default: 5.0)\n"
@@ -50,7 +54,9 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
                             const std::string &features_path, bool use_ctc,
                             bool use_gpu, bool use_fp16, bool show_timestamps,
                             const std::vector<std::string> &boost_phrases = {},
-                            float boost_score = 5.0f,
+                            float boost_score = 5.0f, bool use_ctc_beam = false,
+                            int beam_width = 8, const std::string &lm_path = "",
+                            float lm_weight = 0.5f) {
                             const std::string &vad_weights_path = {},
                             float vad_threshold = 0.5f) {
     using namespace parakeet;
@@ -159,11 +165,39 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
                   << trie.size() << " trie nodes" << std::endl;
     }
 
+    // Load LM if beam search with LM requested
+    ArpaLM arpa_lm;
+    if (use_ctc_beam && !lm_path.empty()) {
+        arpa_lm.load(lm_path);
+        std::cout << "LM loaded: " << arpa_lm.size() << " n-grams, order "
+                  << arpa_lm.order() << std::endl;
+    }
+
     t0 = Clock::now();
     std::vector<std::vector<int>> token_ids;
     std::vector<std::vector<TimestampedToken>> timestamped_tokens;
 
-    if (use_ctc) {
+    if (use_ctc_beam) {
+        auto log_probs = model.ctc_decoder()(encoder_out);
+        auto cpu_lp = log_probs.cpu();
+        BeamSearchOptions bs_opts;
+        bs_opts.beam_width = beam_width;
+        bs_opts.lm = arpa_lm.loaded() ? &arpa_lm : nullptr;
+        bs_opts.lm_weight = lm_weight;
+        bs_opts.pieces = tokenizer.loaded() ? &tokenizer.pieces() : nullptr;
+        if (show_timestamps) {
+            timestamped_tokens =
+                ctc_beam_decode_with_timestamps(cpu_lp, bs_opts);
+            token_ids.resize(timestamped_tokens.size());
+            for (size_t b = 0; b < timestamped_tokens.size(); ++b)
+                for (const auto &t : timestamped_tokens[b])
+                    token_ids[b].push_back(t.token_id);
+        } else {
+            token_ids = ctc_beam_decode(cpu_lp, bs_opts);
+        }
+        std::cout << "Decoder: CTC beam (width=" << beam_width
+                  << (arpa_lm.loaded() ? ", +LM" : "") << ")" << std::endl;
+    } else if (use_ctc) {
         auto log_probs = model.ctc_decoder()(encoder_out);
         auto cpu_lp = log_probs.cpu();
         if (show_timestamps) {
@@ -900,11 +934,15 @@ int main(int argc, char *argv[]) {
         std::string weights_path = argv[1];
         std::string model_type = "tdt-ctc-110m";
         bool use_ctc = false;
+        bool use_ctc_beam = false;
         bool use_gpu = false;
         bool use_fp16 = false;
         bool show_timestamps = false;
         bool streaming = false;
         int latency_frames = 0;
+        int beam_width = 8;
+        std::string lm_path;
+        float lm_weight = 0.5f;
         std::string vocab_path;
         std::string features_path;
         std::string sortformer_weights_path;
@@ -920,8 +958,19 @@ int main(int argc, char *argv[]) {
                 model_type = argv[++i];
             } else if (arg == "--ctc") {
                 use_ctc = true;
+                use_ctc_beam = false;
             } else if (arg == "--tdt") {
                 use_ctc = false;
+                use_ctc_beam = false;
+            } else if (arg == "--ctc-beam") {
+                use_ctc_beam = true;
+                use_ctc = false;
+            } else if (arg == "--beam-width" && i + 1 < argc) {
+                beam_width = std::stoi(argv[++i]);
+            } else if (arg == "--lm" && i + 1 < argc) {
+                lm_path = argv[++i];
+            } else if (arg == "--lm-weight" && i + 1 < argc) {
+                lm_weight = std::stof(argv[++i]);
             } else if (arg == "--gpu") {
                 use_gpu = true;
             } else if (arg == "--fp16") {
@@ -980,6 +1029,7 @@ int main(int argc, char *argv[]) {
             return run_tdt_ctc_110m(weights_path, audio_path, vocab_path,
                                     features_path, use_ctc, use_gpu, use_fp16,
                                     show_timestamps, boost_phrases, boost_score,
+                                    use_ctc_beam, beam_width, lm_path, lm_weight,
                                     vad_weights_path, vad_threshold);
         } else if (model_type == "tdt-600m") {
             if (audio_paths.size() > 1) {

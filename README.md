@@ -34,8 +34,9 @@ std::cout << result.text << std::endl;
 
 Choose decoder at call site:
 ```cpp
-auto result = t.transcribe("audio.wav", parakeet::Decoder::CTC);  // fast greedy
-auto result = t.transcribe("audio.wav", parakeet::Decoder::TDT);  // better accuracy (default)
+auto result = t.transcribe("audio.wav", parakeet::Decoder::CTC);       // fast greedy
+auto result = t.transcribe("audio.wav", parakeet::Decoder::TDT);       // better accuracy (default)
+auto result = t.transcribe("audio.wav", parakeet::Decoder::CTC_BEAM);  // beam search
 ```
 
 Batch transcription (multiple files in one forward pass):
@@ -68,6 +69,16 @@ Phrase boosting for domain-specific vocabulary:
 parakeet::TranscribeOptions opts;
 opts.boost_phrases = {"Phoebe", "portrait"};
 opts.boost_score = 5.0f;  // log-prob bias (default)
+auto result = t.transcribe("audio.wav", opts);
+```
+
+CTC beam search with optional n-gram LM:
+```cpp
+parakeet::TranscribeOptions opts;
+opts.decoder = parakeet::Decoder::CTC_BEAM;
+opts.beam_width = 8;
+opts.lm_path = "lm.arpa";    // optional ARPA language model
+opts.lm_weight = 0.5f;       // LM interpolation weight
 auto result = t.transcribe("audio.wav", opts);
 ```
 
@@ -340,6 +351,25 @@ for (const auto &w : words) {
 }
 ```
 
+**CTC beam search** (with optional LM):
+```cpp
+// Basic beam search
+parakeet::BeamSearchOptions bs_opts;
+bs_opts.beam_width = 8;
+auto tokens = parakeet::ctc_beam_decode(log_probs, bs_opts);
+
+// With ARPA language model
+parakeet::ArpaLM lm;
+lm.load("lm.arpa");
+bs_opts.lm = &lm;
+bs_opts.lm_weight = 0.5f;
+bs_opts.pieces = &tokenizer.pieces();  // needed for word-boundary LM scoring
+auto tokens = parakeet::ctc_beam_decode(log_probs, bs_opts);
+
+// With timestamps
+auto ts = parakeet::ctc_beam_decode_with_timestamps(log_probs, bs_opts);
+```
+
 **Phrase boosting** (context biasing):
 ```cpp
 // Build a trie from boost phrases
@@ -388,8 +418,12 @@ Model types:
                           nemotron-600m, sortformer, diarized
 
 Decoder options:
-  --ctc            Use CTC decoder (default: TDT)
+  --ctc            Use CTC greedy decoder (default: TDT)
   --tdt            Use TDT decoder
+  --ctc-beam       Use CTC beam search decoder
+  --beam-width N   Beam width for beam search (default: 8)
+  --lm PATH        ARPA language model for beam search
+  --lm-weight N    LM interpolation weight (default: 0.5)
 
 Phrase boost:
   --boost PHRASE   Boost a phrase (repeatable)
@@ -429,6 +463,13 @@ Examples:
 
 # Word-level timestamps
 ./build/parakeet model.safetensors audio.wav --vocab vocab.txt --timestamps
+
+# CTC beam search
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt --ctc-beam --beam-width 16
+
+# CTC beam search with ARPA language model
+./build/parakeet model.safetensors audio.wav --vocab vocab.txt \
+  --ctc-beam --lm lm.arpa --lm-weight 0.5
 
 # Phrase boosting for domain-specific terms
 ./build/parakeet model.safetensors audio.wav --vocab vocab.txt \
@@ -571,7 +612,7 @@ Built on a shared FastConformer encoder (Conv2d 8x subsampling → N Conformer b
 
 | Model | Class | Decoder | Use case |
 |-------|-------|---------|----------|
-| CTC | `ParakeetCTC` | Greedy argmax | Fast, English-only |
+| CTC | `ParakeetCTC` | Greedy argmax or beam search (+LM) | Fast, English-only |
 | RNNT | `ParakeetRNNT` | Autoregressive LSTM | Streaming capable |
 | TDT | `ParakeetTDT` | LSTM + duration prediction | Better accuracy than RNNT |
 | TDT-CTC | `ParakeetTDTCTC` | Both TDT and CTC heads | Switch decoder at inference |
@@ -640,8 +681,8 @@ Available model flags: `--110m`, `--tdt-600m`, `--rnnt-600m`, `--sortformer`. Al
 
 - [x] **Confidence scores** — Per-token and per-word confidence (0.0–1.0) from token log-probs. Available on all decoders (CTC, TDT, RNNT, streaming).
 - [x] **Phrase boosting (context biasing)** — Token-level trie over a boost list. Bias log-probs during decode for domain-specific vocabulary (product names, jargon, proper nouns). Works with greedy decode.
-- [ ] **Beam search decoding** — CTC prefix beam search and TDT/RNNT beam search with configurable width. 5–15% relative WER reduction over greedy.
-- [ ] **N-gram LM shallow fusion** — Load ARPA language models, score partial hypotheses during beam search. Domain-adapted decoding.
+- [x] **Beam search decoding** — CTC prefix beam search with configurable width. Merges duplicate prefixes, prunes to top-k per frame. `Decoder::CTC_BEAM` with `beam_width` option. TDT/RNNT beam search planned.
+- [x] **N-gram LM shallow fusion** — Load ARPA language models, score partial hypotheses at word boundaries during CTC beam search. `ArpaLM` with trie-based n-gram storage and backoff.
 
 ### Audio & I/O
 

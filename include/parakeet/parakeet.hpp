@@ -23,6 +23,8 @@
 #include "parakeet/models/transformer.hpp"
 
 // Decode
+#include "parakeet/decode/arpa_lm.hpp"
+#include "parakeet/decode/beam_search.hpp"
 #include "parakeet/decode/phrase_boost.hpp"
 #include "parakeet/decode/timestamp.hpp"
 #include "parakeet/decode/vocab.hpp"

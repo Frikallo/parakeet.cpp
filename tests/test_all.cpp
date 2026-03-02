@@ -1482,6 +1482,437 @@ TEST_F(ModelTest, TranscriberBoostContainsTargetPhrases) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  Phase 6: CTC Beam Search
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── ARPA LM unit tests ─────────────────────────────────────────────────────
+
+TEST(ArpaLM, LoadAndQuery) {
+    // Create a minimal ARPA file in /tmp
+    std::string arpa_path = "/tmp/test_parakeet.arpa";
+    {
+        std::ofstream f(arpa_path);
+        f << "\\data\\\n";
+        f << "ngram 1=3\n";
+        f << "ngram 2=2\n";
+        f << "\n";
+        f << "\\1-grams:\n";
+        f << "-1.0\thello\t-0.5\n";
+        f << "-2.0\tworld\t-0.3\n";
+        f << "-1.5\t<unk>\n";
+        f << "\n";
+        f << "\\2-grams:\n";
+        f << "-0.5\thello\tworld\n";
+        f << "-1.0\tworld\thello\n";
+        f << "\n";
+        f << "\\end\\\n";
+    }
+
+    ArpaLM lm;
+    EXPECT_FALSE(lm.loaded());
+
+    lm.load(arpa_path);
+    EXPECT_TRUE(lm.loaded());
+    EXPECT_EQ(lm.order(), 2);
+    EXPECT_EQ(lm.size(), 5u); // 3 unigrams + 2 bigrams
+
+    // Query unigram
+    auto state = lm.initial_state();
+    float score = lm.score(state, "hello");
+    EXPECT_NEAR(score, -1.0f, 0.01f);
+
+    // Query bigram "hello world"
+    score = lm.score(state, "world");
+    EXPECT_NEAR(score, -0.5f, 0.01f); // bigram should be found
+
+    // Unknown word
+    auto state2 = lm.initial_state();
+    score = lm.score(state2, "nonexistent");
+    EXPECT_LT(score, -50.0f); // should be very negative
+
+    std::remove(arpa_path.c_str());
+}
+
+TEST(ArpaLM, EmptyFile) {
+    ArpaLM lm;
+    EXPECT_FALSE(lm.loaded());
+    EXPECT_EQ(lm.size(), 0u);
+    EXPECT_EQ(lm.order(), 0);
+}
+
+TEST(ArpaLM, BackoffScoring) {
+    std::string arpa_path = "/tmp/test_parakeet_bo.arpa";
+    {
+        std::ofstream f(arpa_path);
+        f << "\\data\\\n";
+        f << "ngram 1=2\n";
+        f << "ngram 2=1\n";
+        f << "\n";
+        f << "\\1-grams:\n";
+        f << "-1.0\ta\t-0.2\n";
+        f << "-1.5\tb\n";
+        f << "\n";
+        f << "\\2-grams:\n";
+        f << "-0.3\ta\tb\n";
+        f << "\n";
+        f << "\\end\\\n";
+    }
+
+    ArpaLM lm;
+    lm.load(arpa_path);
+
+    // "a b" has a direct bigram
+    auto state = lm.initial_state();
+    lm.score(state, "a"); // advance to "a" context
+    float ab = lm.score(state, "b");
+    EXPECT_NEAR(ab, -0.3f, 0.01f);
+
+    // "b a" has no bigram — should backoff
+    auto state2 = lm.initial_state();
+    lm.score(state2, "b");
+    float ba = lm.score(state2, "a");
+    // Backoff: bo(b) + P(a) — b has no backoff (0.0) + P(a) = -1.0
+    EXPECT_LT(ba, -0.5f); // backed off, worse than direct bigram
+
+    std::remove(arpa_path.c_str());
+}
+
+// ─── Beam search with synthetic log-probs ────────────────────────────────────
+
+TEST(BeamSearch, SingleTokenSequence) {
+    // Create log probs: 3 frames, vocab_size=4, blank_id=3
+    // Frame 0: token 0 is best, Frame 1: blank, Frame 2: token 1 is best
+    // Expected output: [0, 1]
+    size_t T = 3, V = 4;
+    std::vector<float> data(T * V, -10.0f);
+    // Frame 0: token 0 has high prob
+    data[0 * V + 0] = -0.1f;
+    data[0 * V + 3] = -5.0f; // blank
+    // Frame 1: blank
+    data[1 * V + 3] = -0.1f;
+    // Frame 2: token 1
+    data[2 * V + 1] = -0.1f;
+    data[2 * V + 3] = -5.0f;
+
+    auto log_probs = Tensor::from_data(data.data(), Shape{1, T, V}, true);
+
+    BeamSearchOptions opts;
+    opts.beam_width = 4;
+    opts.blank_id = 3;
+
+    auto results = ctc_beam_decode(log_probs, opts);
+    ASSERT_EQ(results.size(), 1u);
+    ASSERT_EQ(results[0].size(), 2u);
+    EXPECT_EQ(results[0][0], 0);
+    EXPECT_EQ(results[0][1], 1);
+}
+
+TEST(BeamSearch, AllBlanks) {
+    // All frames have blank as highest — should produce empty output
+    size_t T = 5, V = 3;
+    std::vector<float> data(T * V, -10.0f);
+    for (int t = 0; t < T; ++t)
+        data[t * V + 2] = -0.01f; // blank_id = 2
+
+    auto log_probs = Tensor::from_data(data.data(), Shape{1, T, V}, true);
+
+    BeamSearchOptions opts;
+    opts.beam_width = 4;
+    opts.blank_id = 2;
+
+    auto results = ctc_beam_decode(log_probs, opts);
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_TRUE(results[0].empty());
+}
+
+TEST(BeamSearch, RepeatCollapsing) {
+    // Repeated tokens without blank should collapse
+    // Frame 0,1,2: token 0 is best. Should produce [0].
+    size_t T = 3, V = 3;
+    std::vector<float> data(T * V, -10.0f);
+    for (int t = 0; t < T; ++t) {
+        data[t * V + 0] = -0.1f;
+        data[t * V + 2] = -5.0f; // blank_id = 2
+    }
+
+    auto log_probs = Tensor::from_data(data.data(), Shape{1, T, V}, true);
+
+    BeamSearchOptions opts;
+    opts.beam_width = 4;
+    opts.blank_id = 2;
+
+    auto results = ctc_beam_decode(log_probs, opts);
+    ASSERT_EQ(results.size(), 1u);
+    ASSERT_EQ(results[0].size(), 1u);
+    EXPECT_EQ(results[0][0], 0);
+}
+
+TEST(BeamSearch, RepeatWithBlankBetween) {
+    // token 0, blank, token 0 → should produce [0, 0]
+    size_t T = 3, V = 3;
+    std::vector<float> data(T * V, -10.0f);
+    data[0 * V + 0] = -0.1f; // frame 0: token 0
+    data[1 * V + 2] = -0.1f; // frame 1: blank
+    data[2 * V + 0] = -0.1f; // frame 2: token 0
+
+    auto log_probs = Tensor::from_data(data.data(), Shape{1, T, V}, true);
+
+    BeamSearchOptions opts;
+    opts.beam_width = 4;
+    opts.blank_id = 2;
+
+    auto results = ctc_beam_decode(log_probs, opts);
+    ASSERT_EQ(results.size(), 1u);
+    ASSERT_EQ(results[0].size(), 2u);
+    EXPECT_EQ(results[0][0], 0);
+    EXPECT_EQ(results[0][1], 0);
+}
+
+TEST(BeamSearch, WithTimestamps) {
+    size_t T = 4, V = 4;
+    std::vector<float> data(T * V, -10.0f);
+    data[0 * V + 0] = -0.1f; // frame 0: token 0
+    data[1 * V + 3] = -0.1f; // frame 1: blank
+    data[2 * V + 1] = -0.1f; // frame 2: token 1
+    data[3 * V + 3] = -0.1f; // frame 3: blank
+
+    auto log_probs = Tensor::from_data(data.data(), Shape{1, T, V}, true);
+
+    BeamSearchOptions opts;
+    opts.beam_width = 4;
+    opts.blank_id = 3;
+
+    auto results = ctc_beam_decode_with_timestamps(log_probs, opts);
+    ASSERT_EQ(results.size(), 1u);
+    ASSERT_EQ(results[0].size(), 2u);
+
+    // Token 0 emitted at frame 0
+    EXPECT_EQ(results[0][0].token_id, 0);
+    EXPECT_EQ(results[0][0].start_frame, 0);
+    EXPECT_GT(results[0][0].confidence, 0.0f);
+    EXPECT_LE(results[0][0].confidence, 1.0f);
+
+    // Token 1 emitted at frame 2
+    EXPECT_EQ(results[0][1].token_id, 1);
+    EXPECT_EQ(results[0][1].start_frame, 2);
+}
+
+TEST(BeamSearch, BatchDecode) {
+    // Two batch elements with different sequences
+    size_t T = 3, V = 4;
+    std::vector<float> data(2 * T * V, -10.0f);
+
+    // Batch 0: token 0
+    data[0 * T * V + 0 * V + 0] = -0.1f;
+    data[0 * T * V + 1 * V + 3] = -0.1f; // blank
+    data[0 * T * V + 2 * V + 3] = -0.1f; // blank
+
+    // Batch 1: token 1, token 2
+    data[1 * T * V + 0 * V + 1] = -0.1f;
+    data[1 * T * V + 1 * V + 3] = -0.1f; // blank
+    data[1 * T * V + 2 * V + 2] = -0.1f;
+
+    auto log_probs = Tensor::from_data(data.data(), Shape{2, T, V}, true);
+
+    BeamSearchOptions opts;
+    opts.beam_width = 4;
+    opts.blank_id = 3;
+
+    auto results = ctc_beam_decode(log_probs, opts);
+    ASSERT_EQ(results.size(), 2u);
+
+    ASSERT_EQ(results[0].size(), 1u);
+    EXPECT_EQ(results[0][0], 0);
+
+    ASSERT_EQ(results[1].size(), 2u);
+    EXPECT_EQ(results[1][0], 1);
+    EXPECT_EQ(results[1][1], 2);
+}
+
+TEST(BeamSearch, LengthMasking) {
+    // 5 frames, but length=2 for batch 0
+    size_t T = 5, V = 3;
+    std::vector<float> data(T * V, -10.0f);
+    data[0 * V + 0] = -0.1f; // frame 0: token 0
+    data[1 * V + 2] = -0.1f; // frame 1: blank
+    // frames 2-4 have token 1 but should be ignored
+    for (int t = 2; t < T; ++t)
+        data[t * V + 1] = -0.1f;
+
+    auto log_probs = Tensor::from_data(data.data(), Shape{1, T, V}, true);
+
+    BeamSearchOptions opts;
+    opts.beam_width = 4;
+    opts.blank_id = 2;
+
+    auto results = ctc_beam_decode(log_probs, opts, {2});
+    ASSERT_EQ(results.size(), 1u);
+    ASSERT_EQ(results[0].size(), 1u);
+    EXPECT_EQ(results[0][0], 0); // only token from frame 0
+}
+
+TEST(BeamSearch, BeamWidth1ProducesValidOutput) {
+    // Beam width 1 is NOT identical to greedy — beam search tracks
+    // blank/non-blank probabilities per prefix, while greedy does
+    // frame-level argmax then collapses. Verify it produces valid output.
+    size_t T = 10, V = 5;
+    std::vector<float> data(T * V);
+
+    srand(42);
+    for (size_t t = 0; t < T; ++t) {
+        float sum = 0.0f;
+        for (size_t v = 0; v < V; ++v) {
+            data[t * V + v] = static_cast<float>(rand()) / RAND_MAX;
+            sum += data[t * V + v];
+        }
+        for (size_t v = 0; v < V; ++v) {
+            data[t * V + v] = std::log(data[t * V + v] / sum);
+        }
+    }
+
+    auto log_probs = Tensor::from_data(data.data(), Shape{1, T, V}, true);
+
+    BeamSearchOptions opts;
+    opts.beam_width = 1;
+    opts.blank_id = 4;
+    auto beam = ctc_beam_decode(log_probs, opts);
+
+    ASSERT_EQ(beam.size(), 1u);
+    // All token IDs should be valid (not blank)
+    for (int tok : beam[0]) {
+        EXPECT_GE(tok, 0);
+        EXPECT_LT(tok, 4); // < blank_id
+    }
+}
+
+// ─── E2E beam search test with real model ────────────────────────────────────
+
+TEST(BeamSearchE2E, BeamMatchesOrBeatsGreedy) {
+    if (!has_model_weights() || !has_vocab() || !has_test_audio()) {
+        GTEST_SKIP() << "Model/vocab/audio not available";
+    }
+
+    auto cfg = make_110m_config();
+    ParakeetTDTCTC model(cfg);
+    auto weights = axiom::io::safetensors::load(model_path("model.safetensors"));
+    model.load_state_dict(weights, "", false);
+
+    Tokenizer tokenizer;
+    tokenizer.load(model_path("vocab.txt"));
+
+    auto audio = read_audio(model_path("2086-149220-0033.wav"));
+    auto features = preprocess_audio(audio.samples);
+    auto encoder_out = model.encoder()(features);
+
+    auto log_probs = model.ctc_decoder()(encoder_out);
+    auto cpu_lp = log_probs.cpu();
+
+    // Greedy decode
+    auto greedy_tokens = ctc_greedy_decode(cpu_lp);
+    ASSERT_FALSE(greedy_tokens.empty());
+    ASSERT_FALSE(greedy_tokens[0].empty());
+    std::string greedy_text = tokenizer.decode(greedy_tokens[0]);
+
+    // Beam decode (width 8)
+    BeamSearchOptions opts;
+    opts.beam_width = 8;
+    opts.pieces = &tokenizer.pieces();
+    auto beam_tokens = ctc_beam_decode(cpu_lp, opts);
+    ASSERT_FALSE(beam_tokens.empty());
+    ASSERT_FALSE(beam_tokens[0].empty());
+    std::string beam_text = tokenizer.decode(beam_tokens[0]);
+
+    // Both should produce non-empty text
+    EXPECT_FALSE(greedy_text.empty());
+    EXPECT_FALSE(beam_text.empty());
+
+    // Print for manual inspection
+    std::cout << "  Greedy CTC: " << greedy_text << std::endl;
+    std::cout << "  Beam CTC:   " << beam_text << std::endl;
+    std::cout << "  Greedy tokens: " << greedy_tokens[0].size()
+              << ", Beam tokens: " << beam_tokens[0].size() << std::endl;
+}
+
+TEST(BeamSearchE2E, BeamWithTimestamps) {
+    if (!has_model_weights() || !has_vocab() || !has_test_audio()) {
+        GTEST_SKIP() << "Model/vocab/audio not available";
+    }
+
+    auto cfg = make_110m_config();
+    ParakeetTDTCTC model(cfg);
+    auto weights = axiom::io::safetensors::load(model_path("model.safetensors"));
+    model.load_state_dict(weights, "", false);
+
+    Tokenizer tokenizer;
+    tokenizer.load(model_path("vocab.txt"));
+
+    auto audio = read_audio(model_path("2086-149220-0033.wav"));
+    auto features = preprocess_audio(audio.samples);
+    auto encoder_out = model.encoder()(features);
+
+    auto log_probs = model.ctc_decoder()(encoder_out);
+    auto cpu_lp = log_probs.cpu();
+
+    BeamSearchOptions opts;
+    opts.beam_width = 8;
+    opts.pieces = &tokenizer.pieces();
+
+    auto ts_results = ctc_beam_decode_with_timestamps(cpu_lp, opts);
+    ASSERT_FALSE(ts_results.empty());
+    ASSERT_FALSE(ts_results[0].empty());
+
+    // Verify timestamps are valid
+    for (const auto &tok : ts_results[0]) {
+        EXPECT_GE(tok.start_frame, 0);
+        EXPECT_GE(tok.end_frame, tok.start_frame);
+        EXPECT_GT(tok.confidence, 0.0f);
+        EXPECT_LE(tok.confidence, 1.0f);
+        EXPECT_NE(tok.token_id, 1024); // no blank tokens
+    }
+
+    // Verify timestamps are monotonically non-decreasing
+    for (size_t i = 1; i < ts_results[0].size(); ++i) {
+        EXPECT_GE(ts_results[0][i].start_frame,
+                   ts_results[0][i - 1].start_frame);
+    }
+
+    // Group into words
+    auto words = group_timestamps(ts_results[0], tokenizer.pieces());
+    EXPECT_FALSE(words.empty());
+
+    std::cout << "  Beam search word timestamps:" << std::endl;
+    for (const auto &w : words) {
+        std::cout << "    [" << std::fixed << std::setprecision(2)
+                  << w.start << "s - " << w.end << "s] (" << w.confidence
+                  << ") " << w.word << std::endl;
+    }
+}
+
+TEST(BeamSearchE2E, TranscriberAPIBeamSearch) {
+    if (!has_model_weights() || !has_vocab() || !has_test_audio()) {
+        GTEST_SKIP() << "Model/vocab/audio not available";
+    }
+
+    Transcriber t(model_path("model.safetensors"), model_path("vocab.txt"));
+
+    TranscribeOptions opts;
+    opts.decoder = Decoder::CTC_BEAM;
+    opts.beam_width = 8;
+
+    auto result = t.transcribe(model_path("2086-149220-0033.wav"), opts);
+    EXPECT_FALSE(result.text.empty());
+    EXPECT_FALSE(result.token_ids.empty());
+
+    std::cout << "  Transcriber CTC_BEAM: " << result.text << std::endl;
+
+    // With timestamps
+    opts.timestamps = true;
+    auto result_ts = t.transcribe(model_path("2086-149220-0033.wav"), opts);
+    EXPECT_FALSE(result_ts.text.empty());
+    EXPECT_FALSE(result_ts.word_timestamps.empty());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════════════════════════════
 

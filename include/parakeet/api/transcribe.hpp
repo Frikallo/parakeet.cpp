@@ -8,6 +8,8 @@
 
 #include "parakeet/audio/audio.hpp"
 #include "parakeet/audio/audio_io.hpp"
+#include "parakeet/decode/arpa_lm.hpp"
+#include "parakeet/decode/beam_search.hpp"
 #include "parakeet/audio/vad.hpp"
 #include "parakeet/decode/phrase_boost.hpp"
 #include "parakeet/decode/timestamp.hpp"
@@ -38,7 +40,7 @@ struct TranscribeResult {
 
 // ─── High-Level Transcription API ───────────────────────────────────────────
 
-enum class Decoder { CTC, TDT };
+enum class Decoder { CTC, TDT, CTC_BEAM };
 
 // ─── Transcription Options ──────────────────────────────────────────────────
 
@@ -47,6 +49,11 @@ struct TranscribeOptions {
     bool timestamps = false;
     std::vector<std::string> boost_phrases;
     float boost_score = 5.0f;
+
+    // Beam search options (used when decoder == CTC_BEAM)
+    int beam_width = 8;
+    std::string lm_path;    // Path to ARPA language model (optional)
+    float lm_weight = 0.5f; // LM interpolation weight
     bool use_vad = false; // Enable Silero VAD preprocessing
 };
 
@@ -145,10 +152,32 @@ class Transcriber {
             trie.build(opts.boost_phrases, tokenizer_);
         }
 
+        // Load LM if beam search with LM requested
+        ArpaLM lm;
+        if (opts.decoder == Decoder::CTC_BEAM && !opts.lm_path.empty()) {
+            lm.load(opts.lm_path);
+        }
+
         TranscribeResult result;
 
         if (opts.timestamps) {
-            if (opts.decoder == Decoder::CTC) {
+            if (opts.decoder == Decoder::CTC_BEAM) {
+                auto log_probs = model_.ctc_decoder()(encoder_out);
+                auto cpu_lp = log_probs.cpu();
+                BeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = lm.loaded() ? &lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                auto all_ts = ctc_beam_decode_with_timestamps(cpu_lp, bs_opts);
+                if (!all_ts.empty()) {
+                    result.timestamped_tokens = all_ts[0];
+                    for (const auto &t : result.timestamped_tokens) {
+                        result.token_ids.push_back(t.token_id);
+                    }
+                }
+            } else if (opts.decoder == Decoder::CTC) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
                 auto cpu_lp = log_probs.cpu();
                 auto all_ts = use_boost
@@ -189,7 +218,17 @@ class Transcriber {
             }
         } else {
             std::vector<std::vector<int>> all_tokens;
-            if (opts.decoder == Decoder::CTC) {
+            if (opts.decoder == Decoder::CTC_BEAM) {
+                auto log_probs = model_.ctc_decoder()(encoder_out);
+                auto cpu_lp = log_probs.cpu();
+                BeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = lm.loaded() ? &lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                all_tokens = ctc_beam_decode(cpu_lp, bs_opts);
+            } else if (opts.decoder == Decoder::CTC) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
                 auto cpu_lp = log_probs.cpu();
                 all_tokens = use_boost ? ctc_greedy_decode_boosted(
@@ -273,10 +312,32 @@ class Transcriber {
             trie.build(opts.boost_phrases, tokenizer_);
         }
 
+        // Load LM if beam search with LM requested
+        ArpaLM batch_lm;
+        if (opts.decoder == Decoder::CTC_BEAM && !opts.lm_path.empty()) {
+            batch_lm.load(opts.lm_path);
+        }
+
         std::vector<TranscribeResult> results(samples.size());
 
         if (opts.timestamps) {
-            if (opts.decoder == Decoder::CTC) {
+            if (opts.decoder == Decoder::CTC_BEAM) {
+                auto log_probs = model_.ctc_decoder()(encoder_out);
+                auto cpu_lp = log_probs.cpu();
+                BeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = batch_lm.loaded() ? &batch_lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                auto all_ts = ctc_beam_decode_with_timestamps(cpu_lp, bs_opts,
+                                                              sub_lengths);
+                for (size_t b = 0; b < all_ts.size(); ++b) {
+                    results[b].timestamped_tokens = all_ts[b];
+                    for (const auto &t : all_ts[b])
+                        results[b].token_ids.push_back(t.token_id);
+                }
+            } else if (opts.decoder == Decoder::CTC) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
                 auto cpu_lp = log_probs.cpu();
                 auto all_ts =
@@ -314,7 +375,17 @@ class Transcriber {
             }
         } else {
             std::vector<std::vector<int>> all_tokens;
-            if (opts.decoder == Decoder::CTC) {
+            if (opts.decoder == Decoder::CTC_BEAM) {
+                auto log_probs = model_.ctc_decoder()(encoder_out);
+                auto cpu_lp = log_probs.cpu();
+                BeamSearchOptions bs_opts;
+                bs_opts.beam_width = opts.beam_width;
+                bs_opts.lm = batch_lm.loaded() ? &batch_lm : nullptr;
+                bs_opts.lm_weight = opts.lm_weight;
+                bs_opts.pieces =
+                    tokenizer_.loaded() ? &tokenizer_.pieces() : nullptr;
+                all_tokens = ctc_beam_decode(cpu_lp, bs_opts, sub_lengths);
+            } else if (opts.decoder == Decoder::CTC) {
                 auto log_probs = model_.ctc_decoder()(encoder_out);
                 auto cpu_lp = log_probs.cpu();
                 all_tokens = use_boost
