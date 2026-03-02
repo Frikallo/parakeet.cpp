@@ -18,7 +18,12 @@ TDTJoint::Output TDTJoint::forward(const Tensor &encoder_out,
     hidden = ops::relu(hidden);
 
     auto label_logits = ops::log_softmax(label_proj_(hidden), /*axis=*/-1);
-    auto dur_logits = ops::log_softmax(duration_proj_(hidden), /*axis=*/-1);
+
+    // Pure RNNT models have no duration head (num_durations_ == 0)
+    Tensor dur_logits;
+    if (num_durations_ > 0) {
+        dur_logits = ops::log_softmax(duration_proj_(hidden), /*axis=*/-1);
+    }
 
     return {label_logits, dur_logits};
 }
@@ -83,13 +88,18 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
                 // Get best label and duration
                 auto best_label =
                     ops::argmax(label_lp.squeeze(0).squeeze(0), -1);
-                auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
-
                 int token_id = best_label.item<int>();
-                int dur_idx = best_dur.item<int>();
-                int skip = (dur_idx < static_cast<int>(durations.size()))
+
+                // Duration: RNNT models have no duration head (empty dur_lp)
+                int skip = 1;
+                if (dur_lp.storage()) {
+                    auto best_dur =
+                        ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
+                    int dur_idx = best_dur.item<int>();
+                    skip = (dur_idx < static_cast<int>(durations.size()))
                                ? durations[dur_idx]
                                : 1;
+                }
 
                 if (token_id == blank_id) {
                     // Revert LSTM state — blank doesn't update decoder
@@ -194,11 +204,16 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
                 }
                 float confidence = std::exp(best_lp);
 
-                auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
-                int dur_idx = best_dur.item<int>();
-                int skip = (dur_idx < static_cast<int>(durations.size()))
+                // Duration: RNNT models have no duration head (empty dur_lp)
+                int skip = 1;
+                if (dur_lp.storage()) {
+                    auto best_dur =
+                        ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
+                    int dur_idx = best_dur.item<int>();
+                    skip = (dur_idx < static_cast<int>(durations.size()))
                                ? durations[dur_idx]
                                : 1;
+                }
 
                 if (token_id == blank_id) {
                     states = saved_states;

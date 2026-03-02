@@ -179,7 +179,7 @@ TEST(ConfigPresets, MakeNemotron600mConfig) {
     auto cfg13 = make_nemotron_600m_config(13);
     EXPECT_EQ(cfg13.encoder.att_context_right, 13);
     EXPECT_EQ(cfg13.encoder.num_layers, 24);
-    EXPECT_EQ(cfg13.prediction.vocab_size, 8193);
+    EXPECT_EQ(cfg13.prediction.vocab_size, 1025);
 }
 
 TEST(ConfigPresets, MakeSortformer117mConfig) {

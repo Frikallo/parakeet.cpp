@@ -68,11 +68,16 @@ std::vector<int> rnnt_streaming_decode_chunk(
             }
             float confidence = std::exp(best_lp);
 
-            auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
-            int dur_idx = best_dur.item<int>();
-            int skip = (dur_idx < static_cast<int>(durations.size()))
+            // Duration: RNNT models have no duration head (empty dur_lp)
+            int skip = 1;
+            if (dur_lp.storage()) {
+                auto best_dur =
+                    ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
+                int dur_idx = best_dur.item<int>();
+                skip = (dur_idx < static_cast<int>(durations.size()))
                            ? durations[dur_idx]
                            : 1;
+            }
 
             if (token_id == blank_id) {
                 state.lstm_states = saved_states;

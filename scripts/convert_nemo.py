@@ -66,8 +66,8 @@ MODEL_PRESETS = {
     },
     "nemotron-600m": {
         "num_layers": 24,
-        "vocab_size": 8193,
-        "num_durations": 5,
+        "vocab_size": 1025,
+        "num_durations": 0,
         "num_lstm_layers": 2,
         "has_ctc": False,
         "joint_prefix": "joint_",

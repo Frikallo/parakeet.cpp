@@ -115,7 +115,7 @@ struct NemotronConfig {
     StreamingEncoderConfig encoder;
     PredictionConfig prediction;
     JointConfig joint;
-    std::vector<int> durations = {0, 1, 2, 3, 4};
+    std::vector<int> durations; // empty = pure RNNT (no duration head)
 
     // Latency mode: configurable right context
     // 0 frames = 80ms latency, 1 = 160ms, 6 = 560ms, 13 = 1120ms
@@ -244,14 +244,14 @@ inline NemotronConfig make_nemotron_600m_config(int latency_frames = 0) {
     cfg.encoder.att_context_left = 70;
     cfg.encoder.att_context_right = latency_frames;
     cfg.encoder.chunk_size = 20;
-    cfg.prediction.vocab_size = 8193;
+    cfg.prediction.vocab_size = 1025;
     cfg.prediction.pred_hidden = 640;
     cfg.prediction.num_lstm_layers = 2;
     cfg.joint.encoder_hidden = 1024;
     cfg.joint.pred_hidden = 640;
     cfg.joint.joint_hidden = 640;
-    cfg.joint.vocab_size = 8193;
-    cfg.durations = {0, 1, 2, 3, 4};
+    cfg.joint.vocab_size = 1025;
+    // Nemotron is pure RNNT — no duration head
     cfg.latency_frames = latency_frames;
     return cfg;
 }
