@@ -16,7 +16,7 @@ AOSCCache::AOSCCache(int max_speakers) : max_speakers_(max_speakers) {
 
 void AOSCCache::update(const Tensor &probs) {
     // probs: (T, max_speakers) — sigmoid probabilities
-    auto p = probs.cpu().to_float().ascontiguousarray();
+    auto p = probs.to_contiguous_cpu();
     int T = static_cast<int>(p.shape()[0]);
     int S = static_cast<int>(p.shape()[1]);
     const float *data = p.typed_data<float>();
@@ -72,7 +72,7 @@ Tensor Sortformer::forward(const Tensor &features) const {
 std::vector<DiarizationSegment>
 Sortformer::probs_to_segments(const Tensor &probs) const {
     // probs: (T, max_speakers) on CPU
-    auto p = probs.cpu().to_float().ascontiguousarray();
+    auto p = probs.to_contiguous_cpu();
     int T = static_cast<int>(p.shape()[0]);
     int S = static_cast<int>(p.shape()[1]);
     const float *data = p.typed_data<float>();

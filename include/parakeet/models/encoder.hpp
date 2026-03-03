@@ -122,13 +122,6 @@ class ConvSubsampling : public Module {
     Linear proj_;
 };
 
-// ─── Sinusoidal Positional Embedding ──────────────────────────────────────
-
-// Generate sinusoidal position embeddings for relative positions.
-// Returns (2*seq_len - 1, d_model) encoding relative positions -(seq_len-1) to
-// +(seq_len-1).
-Tensor sinusoidal_position_embedding(int seq_len, int d_model);
-
 // ─── FastConformer Encoder ──────────────────────────────────────────────────
 
 class FastConformerEncoder : public Module {

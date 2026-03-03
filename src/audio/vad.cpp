@@ -73,7 +73,7 @@ float SileroVAD::process_chunk(const axiom::Tensor &chunk, int sample_rate) {
     c_ = c_new;
 
     // Extract scalar probability
-    auto cpu_prob = prob.cpu().to_float().ascontiguousarray();
+    auto cpu_prob = prob.to_contiguous_cpu();
     return cpu_prob.typed_data<float>()[0];
 }
 
@@ -104,7 +104,7 @@ std::vector<SpeechSegment> SileroVAD::detect(const axiom::Tensor &audio,
 
     // Compute per-window speech probabilities
     auto probs_tensor = model_.predict(audio);
-    auto cpu_probs = probs_tensor.cpu().to_float().ascontiguousarray();
+    auto cpu_probs = probs_tensor.to_contiguous_cpu();
     int num_windows = static_cast<int>(cpu_probs.shape()[0]);
     const float *probs = cpu_probs.typed_data<float>();
 

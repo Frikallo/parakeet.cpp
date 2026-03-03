@@ -16,11 +16,9 @@ Tensor CTCDecoder::forward(const Tensor &input) const {
     // output: (batch, vocab, seq) → (batch, seq, vocab)
     x = x.transpose({0, 2, 1});
 
-    // IMPORTANT: move to CPU and make contiguous before log_softmax.
-    // axiom's CPU log_softmax requires contiguous input (operates on physical
-    // layout). GPU log_softmax via MPSGraph also has issues with transposed
-    // tensors.
-    x = x.cpu().ascontiguousarray();
+    // Move to CPU for log_softmax (GPU dispatch differs).
+    // Contiguity is now handled inside axiom's softmax implementation.
+    x = x.cpu();
     return ops::log_softmax(x, /*axis=*/-1);
 }
 
@@ -41,7 +39,7 @@ std::vector<std::vector<int>>
 ctc_greedy_decode(const Tensor &log_probs, int blank_id,
                   const std::vector<int> &lengths) {
     // log_probs: (batch, seq, vocab)
-    auto lp = log_probs.to_float().ascontiguousarray();
+    auto lp = log_probs.to_contiguous_cpu();
     auto shape = lp.shape();
     int batch_size = static_cast<int>(shape[0]);
     int seq_len = static_cast<int>(shape[1]);
@@ -83,7 +81,7 @@ ctc_greedy_decode(const Tensor &log_probs, int blank_id,
 std::vector<std::vector<TimestampedToken>>
 ctc_greedy_decode_with_timestamps(const Tensor &log_probs, int blank_id,
                                   const std::vector<int> &lengths) {
-    auto lp = log_probs.to_float().ascontiguousarray();
+    auto lp = log_probs.to_contiguous_cpu();
     auto shape = lp.shape();
     int batch_size = static_cast<int>(shape[0]);
     int seq_len = static_cast<int>(shape[1]);

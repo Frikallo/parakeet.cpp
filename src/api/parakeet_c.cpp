@@ -331,7 +331,7 @@ extern "C" const float *parakeet_audio_samples(parakeet_audio_t audio,
     if (!audio->samples_cached) {
         // Materialize contiguous float copy from axiom tensor
         auto &t = audio->audio.samples;
-        auto cpu_t = t.cpu().to_float().ascontiguousarray();
+        auto cpu_t = t.to_contiguous_cpu();
         size_t n = static_cast<size_t>(cpu_t.shape()[0]);
         audio->cached_samples.resize(n);
         auto *src = cpu_t.typed_data<float>();

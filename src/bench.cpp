@@ -155,12 +155,7 @@ static void add_duration_args(benchmark::Benchmark *b) {
 }
 
 // Force tensor materialization (ensures lazy GPU graphs actually execute).
-// Calling strides() triggers materialize_if_needed() inside axiom, which
-// compiles and runs the GPU graph without copying data to CPU.
-static void materialize(const axiom::Tensor &t) {
-    auto s = t.strides();
-    benchmark::DoNotOptimize(s);
-}
+static void materialize(const axiom::Tensor &t) { t.sync(); }
 
 static void register_benchmarks() {
     bool has_gpu = !flag_no_gpu && axiom::system::is_metal_available();

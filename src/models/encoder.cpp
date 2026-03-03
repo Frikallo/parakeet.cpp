@@ -2,32 +2,9 @@
 
 #include <cmath>
 
+#include <axiom/nn/positional.hpp>
+
 namespace parakeet::models {
-
-// ─── Sinusoidal Position Embedding ──────────────────────────────────────────
-
-Tensor sinusoidal_position_embedding(int seq_len, int d_model) {
-    // Generate embeddings for positions (seq_len-1) down to -(seq_len-1)
-    // matching NeMo's RelPositionalEncoding.
-    int total = 2 * seq_len - 1;
-    auto pe = Tensor::zeros(
-        {static_cast<size_t>(total), static_cast<size_t>(d_model)});
-
-    float *pe_data = pe.typed_data<float>();
-    for (int pos_idx = 0; pos_idx < total; ++pos_idx) {
-        float position = static_cast<float>(seq_len - 1 - pos_idx);
-        for (int i = 0; i < d_model; i += 2) {
-            float div_term = std::exp(static_cast<float>(i) *
-                                      (-std::log(10000.0f) / d_model));
-            pe_data[pos_idx * d_model + i] = std::sin(position * div_term);
-            if (i + 1 < d_model) {
-                pe_data[pos_idx * d_model + i + 1] =
-                    std::cos(position * div_term);
-            }
-        }
-    }
-    return pe; // (2*seq_len-1, d_model)
-}
 
 // ─── FeedForward ────────────────────────────────────────────────────────────
 
@@ -161,12 +138,7 @@ Tensor ConformerAttention::rel_position_attention(const Tensor &query,
 
     // Apply mask if present
     if (mask.storage()) {
-        // Ensure scores is contiguous before masked_fill (avoids null-storage
-        // view issues with complex broadcast chains)
-        scores = scores.ascontiguousarray();
-        // Convert float mask to bool for masked_fill
-        auto bool_mask = mask.astype(axiom::DType::Bool);
-        scores = ops::masked_fill(scores, bool_mask, -1e9f);
+        scores = ops::masked_fill(scores, mask, -1e9f);
     }
 
     // Softmax over last dim
@@ -262,15 +234,8 @@ Tensor FastConformerEncoder::forward(const Tensor &input,
     // Generate sinusoidal position embeddings for the sequence length
     int seq_len = static_cast<int>(x.shape()[1]);
     int d_model = static_cast<int>(x.shape()[2]);
-    auto pos_emb = sinusoidal_position_embedding(seq_len, d_model);
-
-    // Match pos_emb dtype and device to input
-    if (x.dtype() != pos_emb.dtype()) {
-        pos_emb = pos_emb.astype(x.dtype());
-    }
-    if (x.device() != pos_emb.device()) {
-        pos_emb = pos_emb.to(x.device());
-    }
+    auto pos_emb = axiom::nn::sinusoidal_position_embedding(
+        seq_len, d_model, x.dtype(), x.device());
 
     for (const auto &block : layers_.each<ConformerBlock>()) {
         x = block(x, pos_emb, mask);

@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include <axiom/nn/positional.hpp>
+
 namespace parakeet::models {
 
 // ─── CausalConformerConvModule ───────────────────────────────────────────────
@@ -69,10 +71,8 @@ Tensor CausalConformerConvModule::forward_cached(const Tensor &input,
     } else {
         // First chunk: zero-pad left
         auto shape = x.shape();
-        auto pad_tensor = Tensor::zeros(
-            {shape[0], shape[1], static_cast<size_t>(cache_len)}, x.dtype());
-        if (x.device() != axiom::Device::CPU)
-            pad_tensor = pad_tensor.to(x.device());
+        auto pad_tensor =
+            x.new_zeros({shape[0], shape[1], static_cast<size_t>(cache_len)});
         x = Tensor::cat({pad_tensor, x}, 2);
     }
 
@@ -166,9 +166,7 @@ Tensor StreamingConformerAttention::rel_position_attention(
     auto scores = (content_score + pos_score) * scale;
 
     if (mask.storage()) {
-        scores = scores.ascontiguousarray();
-        auto bool_mask = mask.astype(axiom::DType::Bool);
-        scores = ops::masked_fill(scores, bool_mask, -1e9f);
+        scores = ops::masked_fill(scores, mask, -1e9f);
     }
 
     auto attn_weights = ops::softmax(scores, -1);
@@ -249,12 +247,8 @@ Tensor StreamingConformerAttention::forward_cached(
     // relative position embeddings. The rel_shift with num_keys=kv_len
     // correctly extracts the (chunk_len, kv_len) relative position score
     // matrix.
-    auto pos_emb_local =
-        sinusoidal_position_embedding(static_cast<int>(kv_len), d_model);
-    if (q.dtype() != axiom::DType::Float32)
-        pos_emb_local = pos_emb_local.astype(q.dtype());
-    if (q.device() != pos_emb_local.device())
-        pos_emb_local = pos_emb_local.to(q.device());
+    auto pos_emb_local = axiom::nn::sinusoidal_position_embedding(
+        static_cast<int>(kv_len), d_model, q.dtype(), q.device());
 
     auto p = pos_proj_(pos_emb_local);
     auto pos_len = p.shape()[0]; // 2*kv_len - 1
@@ -288,11 +282,7 @@ Tensor StreamingConformerAttention::forward_cached(
             true);
         if (scores.device() != axiom::Device::CPU)
             attn_mask = attn_mask.to(scores.device());
-        // Ensure scores is contiguous before masked_fill (avoids null-storage
-        // view issues with complex broadcast chains)
-        scores = scores.ascontiguousarray();
-        auto bool_mask = attn_mask.astype(axiom::DType::Bool);
-        scores = ops::masked_fill(scores, bool_mask, -1e9f);
+        scores = ops::masked_fill(scores, attn_mask, -1e9f);
     }
 
     auto attn_weights = ops::softmax(scores, -1);

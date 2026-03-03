@@ -149,11 +149,7 @@ rnnt_greedy_decode_with_timestamps(ParakeetRNNT &model,
                 auto logits = model.joint().forward(enc_t, pred);
 
                 // Manual argmax to get both index and log-prob
-                auto lp_1d = logits.squeeze(0)
-                                 .squeeze(0)
-                                 .cpu()
-                                 .to_float()
-                                 .ascontiguousarray();
+                auto lp_1d = logits.squeeze(0).squeeze(0).to_contiguous_cpu();
                 const float *lp_data = lp_1d.typed_data<float>();
                 int vocab_size = static_cast<int>(lp_1d.shape()[0]);
                 int token_id = 0;

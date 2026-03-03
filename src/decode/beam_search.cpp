@@ -323,7 +323,7 @@ Hypothesis beam_search_single(const float *log_probs_data, int T, int V,
 std::vector<std::vector<int>> ctc_beam_decode(const axiom::Tensor &log_probs,
                                               const BeamSearchOptions &opts,
                                               const std::vector<int> &lengths) {
-    auto lp = log_probs.to_float().ascontiguousarray();
+    auto lp = log_probs.to_contiguous_cpu();
     auto shape = lp.shape();
     int batch_size = static_cast<int>(shape[0]);
     int seq_len = static_cast<int>(shape[1]);
@@ -349,7 +349,7 @@ std::vector<std::vector<TimestampedToken>>
 ctc_beam_decode_with_timestamps(const axiom::Tensor &log_probs,
                                 const BeamSearchOptions &opts,
                                 const std::vector<int> &lengths) {
-    auto lp = log_probs.to_float().ascontiguousarray();
+    auto lp = log_probs.to_contiguous_cpu();
     auto shape = lp.shape();
     int batch_size = static_cast<int>(shape[0]);
     int seq_len = static_cast<int>(shape[1]);

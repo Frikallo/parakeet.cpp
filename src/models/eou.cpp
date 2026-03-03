@@ -51,11 +51,7 @@ std::vector<int> rnnt_streaming_decode_chunk(
             auto [label_lp, dur_lp] = joint.forward(enc_t, pred);
 
             // Manual argmax on label log-probs for index + confidence
-            auto label_1d = label_lp.squeeze(0)
-                                .squeeze(0)
-                                .cpu()
-                                .to_float()
-                                .ascontiguousarray();
+            auto label_1d = label_lp.squeeze(0).squeeze(0).to_contiguous_cpu();
             const float *label_data = label_1d.typed_data<float>();
             int vocab_size = static_cast<int>(label_1d.shape()[0]);
             int token_id = 0;

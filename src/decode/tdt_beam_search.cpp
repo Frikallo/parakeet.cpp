@@ -100,10 +100,8 @@ void expand_hypothesis(TDTHypothesis &hyp, const Tensor &enc_t,
     auto [label_lp, dur_lp] = joint.forward(enc_t, pred);
 
     // Flatten and move to CPU for reading
-    auto label_1d =
-        label_lp.squeeze(0).squeeze(0).cpu().to_float().ascontiguousarray();
-    auto dur_1d =
-        dur_lp.squeeze(0).squeeze(0).cpu().to_float().ascontiguousarray();
+    auto label_1d = label_lp.squeeze(0).squeeze(0).to_contiguous_cpu();
+    auto dur_1d = dur_lp.squeeze(0).squeeze(0).to_contiguous_cpu();
 
     const float *label_data = label_1d.typed_data<float>();
     const float *dur_data = dur_1d.typed_data<float>();
