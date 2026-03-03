@@ -164,7 +164,7 @@ TEST(ConfigPresets, MakeEOU120mConfig) {
     EXPECT_EQ(cfg.encoder.att_context_left, 70);
     EXPECT_EQ(cfg.encoder.att_context_right, 1);
     EXPECT_EQ(cfg.encoder.chunk_size, 20);
-    EXPECT_EQ(cfg.prediction.vocab_size, 1025);
+    EXPECT_EQ(cfg.prediction.vocab_size, 1027);
 }
 
 TEST(ConfigPresets, MakeNemotron600mConfig) {
@@ -179,7 +179,7 @@ TEST(ConfigPresets, MakeNemotron600mConfig) {
     auto cfg13 = make_nemotron_600m_config(13);
     EXPECT_EQ(cfg13.encoder.att_context_right, 13);
     EXPECT_EQ(cfg13.encoder.num_layers, 24);
-    EXPECT_EQ(cfg13.prediction.vocab_size, 8193);
+    EXPECT_EQ(cfg13.prediction.vocab_size, 1025);
 }
 
 TEST(ConfigPresets, MakeSortformer117mConfig) {

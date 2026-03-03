@@ -31,6 +31,16 @@ struct StreamingEncoderConfig : EncoderConfig {
     int chunk_size = 20;       // frames per chunk after subsampling
     SubsamplingActivation subsampling_activation = SubsamplingActivation::ReLU;
     bool xscaling = false; // multiply subsampling output by sqrt(d_model)
+    // NeMo CausalConv2D padding: left=kernel-1, right=stride-1 for both dims
+    // (gives 128 mel → 17 freq after 3x stride-2). When false, uses standard
+    // symmetric padding (128 mel → 16 freq).
+    bool causal_conv2d_padding = false;
+    // NeMo conv_norm_type: "layer_norm" vs "batch_norm" in the conformer
+    // conv module. EOU/Nemotron use layer_norm; Sortformer uses batch_norm.
+    bool conv_layer_norm = false;
+    // EOU/Nemotron use bias=false in MHA, FFN, and Conv modules.
+    // Older models (110M, 600M-TDT, Sortformer) use bias=true.
+    bool encoder_no_bias = false;
 };
 
 // ─── Transformer Config ─────────────────────────────────────────────────────
@@ -115,7 +125,7 @@ struct NemotronConfig {
     StreamingEncoderConfig encoder;
     PredictionConfig prediction;
     JointConfig joint;
-    std::vector<int> durations = {0, 1, 2, 3, 4};
+    std::vector<int> durations; // empty = pure RNNT (no duration head)
 
     // Latency mode: configurable right context
     // 0 frames = 80ms latency, 1 = 160ms, 6 = 560ms, 13 = 1120ms
@@ -210,6 +220,7 @@ inline RNNTConfig make_rnnt_600m_config() {
 
 inline EOUConfig make_eou_120m_config() {
     EOUConfig cfg;
+    cfg.encoder.mel_bins = 128;
     cfg.encoder.hidden_size = 512;
     cfg.encoder.num_layers = 17;
     cfg.encoder.num_heads = 8;
@@ -219,22 +230,26 @@ inline EOUConfig make_eou_120m_config() {
     cfg.encoder.att_context_left = 70;
     cfg.encoder.att_context_right = 1;
     cfg.encoder.chunk_size = 20; // ~160ms chunks
-    cfg.prediction.vocab_size = 1025;
+    cfg.encoder.causal_conv2d_padding = true;
+    cfg.encoder.conv_layer_norm = true;
+    cfg.encoder.encoder_no_bias = true;
+    cfg.prediction.vocab_size = 1027; // 1024 BPE + <EOU> + <EOB> + blank
     cfg.prediction.pred_hidden = 640;
     cfg.prediction.num_lstm_layers = 1;
     cfg.joint.encoder_hidden = 512;
     cfg.joint.pred_hidden = 640;
     cfg.joint.joint_hidden = 640;
-    cfg.joint.vocab_size = 1025;
-    cfg.durations = {0, 1, 2, 3, 4};
-    cfg.eou_token_id = 1024; // blank acts as EOU for simplicity
-    cfg.ctc_vocab_size = 1025;
+    cfg.joint.vocab_size = 1027;
+    cfg.durations = {};      // pure RNNT — no duration head
+    cfg.eou_token_id = 1024; // <EOU> token
+    cfg.ctc_vocab_size = 1027;
     return cfg;
 }
 
 // Default: 80ms latency (att_context_right=0)
 inline NemotronConfig make_nemotron_600m_config(int latency_frames = 0) {
     NemotronConfig cfg;
+    cfg.encoder.mel_bins = 128;
     cfg.encoder.hidden_size = 1024;
     cfg.encoder.num_layers = 24;
     cfg.encoder.num_heads = 8;
@@ -244,14 +259,17 @@ inline NemotronConfig make_nemotron_600m_config(int latency_frames = 0) {
     cfg.encoder.att_context_left = 70;
     cfg.encoder.att_context_right = latency_frames;
     cfg.encoder.chunk_size = 20;
-    cfg.prediction.vocab_size = 8193;
+    cfg.encoder.causal_conv2d_padding = true;
+    cfg.encoder.conv_layer_norm = true;
+    cfg.encoder.encoder_no_bias = true;
+    cfg.prediction.vocab_size = 1025;
     cfg.prediction.pred_hidden = 640;
     cfg.prediction.num_lstm_layers = 2;
     cfg.joint.encoder_hidden = 1024;
     cfg.joint.pred_hidden = 640;
     cfg.joint.joint_hidden = 640;
-    cfg.joint.vocab_size = 8193;
-    cfg.durations = {0, 1, 2, 3, 4};
+    cfg.joint.vocab_size = 1025;
+    // Nemotron is pure RNNT — no duration head
     cfg.latency_frames = latency_frames;
     return cfg;
 }

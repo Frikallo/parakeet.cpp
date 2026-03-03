@@ -41,6 +41,7 @@ std::vector<int> rnnt_streaming_decode_chunk(
     while (t < chunk_len) {
         auto enc_t = encoder_chunk.slice({Slice(), Slice(t, t + 1)});
 
+        bool frame_advanced = false;
         for (int sym = 0; sym < max_symbols_per_step; ++sym) {
             auto saved_states = state.lstm_states;
 
@@ -67,15 +68,20 @@ std::vector<int> rnnt_streaming_decode_chunk(
             }
             float confidence = std::exp(best_lp);
 
-            auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
-            int dur_idx = best_dur.item<int>();
-            int skip = (dur_idx < static_cast<int>(durations.size()))
+            // Duration: RNNT models have no duration head (empty dur_lp)
+            int skip = 1;
+            if (dur_lp.storage()) {
+                auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
+                int dur_idx = best_dur.item<int>();
+                skip = (dur_idx < static_cast<int>(durations.size()))
                            ? durations[dur_idx]
                            : 1;
+            }
 
             if (token_id == blank_id) {
                 state.lstm_states = saved_states;
                 t += std::max(skip, 1);
+                frame_advanced = true;
                 break;
             }
 
@@ -92,8 +98,15 @@ std::vector<int> rnnt_streaming_decode_chunk(
 
             if (skip > 0) {
                 t += skip;
+                frame_advanced = true;
                 break;
             }
+        }
+
+        // Force advance when max_symbols_per_step reached without
+        // a blank or positive-duration token.
+        if (!frame_advanced) {
+            t += 1;
         }
     }
 

@@ -58,16 +58,16 @@ MODEL_PRESETS = {
     },
     "eou-120m": {
         "num_layers": 17,
-        "vocab_size": 1025,
-        "num_durations": 5,
+        "vocab_size": 1027,
+        "num_durations": 0,
         "num_lstm_layers": 1,
         "has_ctc": True,
-        "joint_prefix": "tdt_joint_",
+        "joint_prefix": "joint_",
     },
     "nemotron-600m": {
         "num_layers": 24,
-        "vocab_size": 8193,
-        "num_durations": 5,
+        "vocab_size": 1025,
+        "num_durations": 0,
         "num_lstm_layers": 2,
         "has_ctc": False,
         "joint_prefix": "joint_",
@@ -496,6 +496,9 @@ def convert(ckpt_path, output_path, model_type=DEFAULT_MODEL):
             print(f"  Missing: {ctc_missing}")
             print(f"  CTC head will be randomly initialized at load time.")
             print(f"  (This is normal if the model was trained with TDT only.)")
+
+    # Remove zero-size tensors (e.g. empty duration_proj for RNNT models)
+    output = {k: v for k, v in output.items() if v.numel() > 0}
 
     # Convert to float32 and save
     output = {k: v.float().contiguous() for k, v in output.items()}

@@ -46,10 +46,10 @@ install: build
 	cmake --install $(BUILD_DIR)
 
 format:
-	find src include -name '*.cpp' -o -name '*.hpp' | xargs clang-format -i
+	find src include examples -name '*.cpp' -o -name '*.hpp' -o -name '*.c' | xargs clang-format -i
 
 format-check:
-	find src include -name '*.cpp' -o -name '*.hpp' | xargs clang-format --dry-run --Werror
+	find src include examples -name '*.cpp' -o -name '*.hpp' -o -name '*.c' | xargs clang-format --dry-run --Werror
 
 clean:
 	rm -rf $(BUILD_DIR)

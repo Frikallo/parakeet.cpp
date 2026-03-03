@@ -8,7 +8,7 @@ namespace parakeet::models {
 
 TDTJoint::TDTJoint(const JointConfig &config, int num_durations)
     : config_(config), num_durations_(num_durations), enc_proj_(true),
-      pred_proj_(false), label_proj_(true), duration_proj_(true) {
+      pred_proj_(true), label_proj_(true), duration_proj_(true) {
     AX_REGISTER_MODULES(enc_proj_, pred_proj_, label_proj_, duration_proj_);
 }
 
@@ -18,7 +18,12 @@ TDTJoint::Output TDTJoint::forward(const Tensor &encoder_out,
     hidden = ops::relu(hidden);
 
     auto label_logits = ops::log_softmax(label_proj_(hidden), /*axis=*/-1);
-    auto dur_logits = ops::log_softmax(duration_proj_(hidden), /*axis=*/-1);
+
+    // Pure RNNT models have no duration head (num_durations_ == 0)
+    Tensor dur_logits;
+    if (num_durations_ > 0) {
+        dur_logits = ops::log_softmax(duration_proj_(hidden), /*axis=*/-1);
+    }
 
     return {label_logits, dur_logits};
 }
@@ -68,6 +73,7 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
             auto enc_t =
                 enc.slice({Slice(), Slice(t, t + 1)}); // (1, 1, hidden)
 
+            bool frame_advanced = false;
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
                 // Save LSTM states before prediction step.
                 // On blank, we must revert to these (NeMo only updates
@@ -82,18 +88,24 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
                 // Get best label and duration
                 auto best_label =
                     ops::argmax(label_lp.squeeze(0).squeeze(0), -1);
-                auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
-
                 int token_id = best_label.item<int>();
-                int dur_idx = best_dur.item<int>();
-                int skip = (dur_idx < static_cast<int>(durations.size()))
+
+                // Duration: RNNT models have no duration head (empty dur_lp)
+                int skip = 1;
+                if (dur_lp.storage()) {
+                    auto best_dur =
+                        ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
+                    int dur_idx = best_dur.item<int>();
+                    skip = (dur_idx < static_cast<int>(durations.size()))
                                ? durations[dur_idx]
                                : 1;
+                }
 
                 if (token_id == blank_id) {
                     // Revert LSTM state — blank doesn't update decoder
                     states = saved_states;
                     t += std::max(skip, 1);
+                    frame_advanced = true;
                     break;
                 }
 
@@ -104,9 +116,18 @@ tdt_greedy_decode(RNNTPrediction &prediction, TDTJoint &joint,
                 // Non-blank with duration > 0 means skip frames
                 if (skip > 0) {
                     t += skip;
+                    frame_advanced = true;
                     break;
                 }
                 // duration 0: emit another symbol on same frame
+            }
+
+            // If max_symbols_per_step reached without advancing the frame
+            // (all predicted tokens were non-blank with duration 0), force
+            // advance by 1 to prevent an infinite loop. This matches NeMo's
+            // behavior where the outer time loop always progresses.
+            if (!frame_advanced) {
+                t += 1;
             }
         }
     }
@@ -156,6 +177,7 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
         while (t < T) {
             auto enc_t = enc.slice({Slice(), Slice(t, t + 1)});
 
+            bool frame_advanced = false;
             for (int sym = 0; sym < max_symbols_per_step; ++sym) {
                 auto saved_states = states;
 
@@ -182,15 +204,21 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
                 }
                 float confidence = std::exp(best_lp);
 
-                auto best_dur = ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
-                int dur_idx = best_dur.item<int>();
-                int skip = (dur_idx < static_cast<int>(durations.size()))
+                // Duration: RNNT models have no duration head (empty dur_lp)
+                int skip = 1;
+                if (dur_lp.storage()) {
+                    auto best_dur =
+                        ops::argmax(dur_lp.squeeze(0).squeeze(0), -1);
+                    int dur_idx = best_dur.item<int>();
+                    skip = (dur_idx < static_cast<int>(durations.size()))
                                ? durations[dur_idx]
                                : 1;
+                }
 
                 if (token_id == blank_id) {
                     states = saved_states;
                     t += std::max(skip, 1);
+                    frame_advanced = true;
                     break;
                 }
 
@@ -205,8 +233,15 @@ std::vector<std::vector<TimestampedToken>> tdt_greedy_decode_with_timestamps(
 
                 if (skip > 0) {
                     t += skip;
+                    frame_advanced = true;
                     break;
                 }
+            }
+
+            // If max_symbols_per_step reached without advancing the frame,
+            // force advance by 1 to prevent an infinite loop.
+            if (!frame_advanced) {
+                t += 1;
             }
         }
     }

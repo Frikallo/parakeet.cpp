@@ -31,8 +31,8 @@ Tensor sinusoidal_position_embedding(int seq_len, int d_model) {
 
 // ─── FeedForward ────────────────────────────────────────────────────────────
 
-FeedForward::FeedForward(float dropout)
-    : fc1_(true), fc2_(true), dropout_(dropout) {
+FeedForward::FeedForward(float dropout, bool bias)
+    : fc1_(bias), fc2_(bias), dropout_(dropout) {
     AX_REGISTER_MODULES(norm_, fc1_, fc2_, dropout_);
 }
 
@@ -161,7 +161,12 @@ Tensor ConformerAttention::rel_position_attention(const Tensor &query,
 
     // Apply mask if present
     if (mask.storage()) {
-        scores = ops::masked_fill(scores, mask, -1e9f);
+        // Ensure scores is contiguous before masked_fill (avoids null-storage
+        // view issues with complex broadcast chains)
+        scores = scores.ascontiguousarray();
+        // Convert float mask to bool for masked_fill
+        auto bool_mask = mask.astype(axiom::DType::Bool);
+        scores = ops::masked_fill(scores, bool_mask, -1e9f);
     }
 
     // Softmax over last dim

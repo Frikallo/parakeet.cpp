@@ -14,7 +14,7 @@ using namespace axiom::nn;
 
 class FeedForward : public Module {
   public:
-    explicit FeedForward(float dropout = 0.1f);
+    explicit FeedForward(float dropout = 0.1f, bool bias = true);
 
     Tensor forward(const Tensor &input) const;
     Tensor operator()(const Tensor &input) const { return forward(input); }
