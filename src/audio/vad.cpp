@@ -20,7 +20,8 @@ void SileroVAD::to_gpu() {
 }
 
 void SileroVAD::to_half() {
-    model_.to(axiom::DType::Float16);
+    for (auto *p : model_.parameters())
+        *p = p->astype(axiom::DType::Float16);
     use_fp16_ = true;
     initialized_ = false;
 }

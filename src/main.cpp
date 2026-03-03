@@ -72,7 +72,8 @@ static int run_tdt_ctc_110m(const std::string &weights_path,
     std::cout << "Model loaded (" << weights.size() << " tensors)" << std::endl;
 
     if (use_fp16) {
-        model.to(axiom::DType::Float16);
+        for (auto *p : model.parameters())
+            *p = p->astype(axiom::DType::Float16);
         std::cout << "Model cast to fp16" << std::endl;
     }
 
@@ -381,7 +382,8 @@ static int run_tdt_600m(
     std::cout << "Model loaded (" << weights.size() << " tensors)" << std::endl;
 
     if (use_fp16) {
-        model.to(axiom::DType::Float16);
+        for (auto *p : model.parameters())
+            *p = p->astype(axiom::DType::Float16);
         std::cout << "Model cast to fp16" << std::endl;
     }
 
@@ -610,7 +612,8 @@ static int run_rnnt_600m(const std::string &weights_path,
     std::cout << "Model loaded (" << weights.size() << " tensors)" << std::endl;
 
     if (use_fp16) {
-        model.to(axiom::DType::Float16);
+        for (auto *p : model.parameters())
+            *p = p->astype(axiom::DType::Float16);
         std::cout << "Model cast to fp16" << std::endl;
     }
 
@@ -821,7 +824,8 @@ static int run_sortformer(const std::string &weights_path,
     model.load_state_dict(weights, "", false);
 
     if (use_fp16) {
-        model.to(axiom::DType::Float16);
+        for (auto *p : model.parameters())
+            *p = p->astype(axiom::DType::Float16);
         std::cout << "Model cast to fp16" << std::endl;
     }
 

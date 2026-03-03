@@ -28,6 +28,13 @@ using namespace models;
 using namespace decode;
 using namespace audio;
 
+/// Cast all parameters of a module to the given dtype (in-place).
+inline void module_to_dtype(axiom::nn::Module &module, axiom::DType dtype) {
+    for (auto *p : module.parameters()) {
+        *p = p->astype(dtype);
+    }
+}
+
 // ─── Transcription Result ───────────────────────────────────────────────────
 
 struct TranscribeResult {
@@ -88,7 +95,7 @@ class Transcriber {
 
     /// Cast model to fp16. Call before to_gpu() for efficient transfer.
     void to_half() {
-        model_.to(axiom::DType::Float16);
+        module_to_dtype(model_, axiom::DType::Float16);
         use_fp16_ = true;
     }
 
@@ -515,7 +522,7 @@ class TDTTranscriber {
     }
 
     void to_half() {
-        model_.to(axiom::DType::Float16);
+        module_to_dtype(model_, axiom::DType::Float16);
         use_fp16_ = true;
     }
 
@@ -835,7 +842,7 @@ class StreamingTranscriber {
     }
 
     void to_half() {
-        model_.to(axiom::DType::Float16);
+        module_to_dtype(model_, axiom::DType::Float16);
         use_fp16_ = true;
     }
 
@@ -906,7 +913,7 @@ class NemotronTranscriber {
     }
 
     void to_half() {
-        model_.to(axiom::DType::Float16);
+        module_to_dtype(model_, axiom::DType::Float16);
         use_fp16_ = true;
     }
 

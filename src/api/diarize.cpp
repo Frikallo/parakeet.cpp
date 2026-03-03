@@ -69,7 +69,7 @@ void DiarizedTranscriber::to_gpu() {
 
 void DiarizedTranscriber::to_half() {
     transcriber_.to_half();
-    sortformer_.to(axiom::DType::Float16);
+    api::module_to_dtype(sortformer_, axiom::DType::Float16);
     use_fp16_ = true;
 }
 
