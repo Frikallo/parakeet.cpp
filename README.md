@@ -58,7 +58,7 @@ make build
 make test
 ```
 
-Requirements: C++20 (Clang 14+ or GCC 12+), CMake 3.20+, macOS 13+ for Metal GPU.
+Requirements: C++20 (Clang 14+ or GCC 12+), CMake 3.20+, [uv](https://docs.astral.sh/uv/) (for Python scripts), macOS 13+ for Metal GPU.
 
 ## Convert Weights
 
@@ -67,19 +67,18 @@ Requirements: C++20 (Clang 14+ or GCC 12+), CMake 3.20+, macOS 13+ for Metal GPU
 huggingface-cli download nvidia/parakeet-tdt_ctc-110m --include "*.nemo" --local-dir .
 
 # Convert to safetensors
-pip install safetensors torch
-python scripts/convert_nemo.py parakeet-tdt_ctc-110m.nemo -o model.safetensors
+uv run scripts/convert_nemo.py parakeet-tdt_ctc-110m.nemo -o model.safetensors
 ```
 
 The converter supports all model types: `110m-tdt-ctc` (default), `600m-tdt`, `eou-120m`, `nemotron-600m`, `sortformer`.
 
 ```bash
-python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model 600m-tdt
+uv run scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model 600m-tdt
 ```
 
 Silero VAD weights:
 ```bash
-python scripts/convert_silero_vad.py -o silero_vad_v5.safetensors
+uv run scripts/convert_silero_vad.py -o silero_vad_v5.safetensors
 ```
 
 ## Examples

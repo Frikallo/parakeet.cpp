@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["torch", "safetensors"]
+# ///
 """Convert Silero VAD v5 model to safetensors for axiom.
 
 Downloads the model from torch.hub and extracts weights using the known
