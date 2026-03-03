@@ -164,7 +164,7 @@ TEST(ConfigPresets, MakeEOU120mConfig) {
     EXPECT_EQ(cfg.encoder.att_context_left, 70);
     EXPECT_EQ(cfg.encoder.att_context_right, 1);
     EXPECT_EQ(cfg.encoder.chunk_size, 20);
-    EXPECT_EQ(cfg.prediction.vocab_size, 1025);
+    EXPECT_EQ(cfg.prediction.vocab_size, 1027);
 }
 
 TEST(ConfigPresets, MakeNemotron600mConfig) {

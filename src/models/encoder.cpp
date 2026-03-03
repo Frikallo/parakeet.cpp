@@ -31,8 +31,8 @@ Tensor sinusoidal_position_embedding(int seq_len, int d_model) {
 
 // ─── FeedForward ────────────────────────────────────────────────────────────
 
-FeedForward::FeedForward(float dropout)
-    : fc1_(true), fc2_(true), dropout_(dropout) {
+FeedForward::FeedForward(float dropout, bool bias)
+    : fc1_(bias), fc2_(bias), dropout_(dropout) {
     AX_REGISTER_MODULES(norm_, fc1_, fc2_, dropout_);
 }
 

@@ -38,7 +38,9 @@ struct EncoderCache {
 class CausalConformerConvModule : public Module {
   public:
     explicit CausalConformerConvModule(int groups = 1, int kernel_size = 9,
-                                       float dropout = 0.1f);
+                                       float dropout = 0.1f,
+                                       bool use_layer_norm = false,
+                                       bool bias = true);
 
     // Non-streaming: full-sequence forward (same as regular
     // ConformerConvModule)
@@ -51,10 +53,12 @@ class CausalConformerConvModule : public Module {
 
   private:
     int kernel_size_;
+    bool use_layer_norm_;
     LayerNorm norm_;
     Conv1d pointwise_conv1_;
-    Conv1d depthwise_conv_; // NO padding — we prepend cache manually
-    BatchNorm1d batch_norm_;
+    Conv1d depthwise_conv_;   // NO padding — we prepend cache manually
+    BatchNorm1d batch_norm_;  // used when use_layer_norm_ == false
+    LayerNorm ln_batch_norm_; // used when use_layer_norm_ == true
     Conv1d pointwise_conv2_;
     Dropout dropout_;
 };
@@ -68,7 +72,8 @@ class CausalConformerConvModule : public Module {
 class StreamingConformerAttention : public Module {
   public:
     explicit StreamingConformerAttention(int num_heads = 8,
-                                         float dropout = 0.1f);
+                                         float dropout = 0.1f,
+                                         bool bias = true);
 
     // Non-streaming: full-sequence relative position attention
     Tensor forward(const Tensor &input, const Tensor &pos_emb,
@@ -95,7 +100,7 @@ class StreamingConformerAttention : public Module {
     Tensor rel_position_attention(const Tensor &query, const Tensor &key,
                                   const Tensor &value, const Tensor &pos_emb,
                                   const Tensor &mask) const;
-    static Tensor rel_shift(const Tensor &x);
+    static Tensor rel_shift(const Tensor &x, int64_t num_keys = -1);
 };
 
 // ─── Streaming Conformer Block ───────────────────────────────────────────────
@@ -136,7 +141,8 @@ class CausalConvSubsampling : public Module {
   public:
     explicit CausalConvSubsampling(
         int channels = 256,
-        SubsamplingActivation act = SubsamplingActivation::SiLU);
+        SubsamplingActivation act = SubsamplingActivation::SiLU,
+        bool causal_conv2d_padding = false);
 
     // Non-streaming: full-sequence (identical to ConvSubsampling)
     Tensor forward(const Tensor &input) const;
@@ -152,6 +158,7 @@ class CausalConvSubsampling : public Module {
     Conv2d conv2_, conv3_;
     Linear proj_;
     SubsamplingActivation activation_;
+    bool causal_padding_; // true = NeMo CausalConv2D (2,1) padding
 };
 
 // ─── Streaming FastConformer Encoder ─────────────────────────────────────────

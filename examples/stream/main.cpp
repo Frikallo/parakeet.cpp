@@ -16,10 +16,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    parakeet::StreamingTranscriber t(argv[1], argv[2],
-                                     parakeet::make_eou_120m_config());
-
-    // Load full audio file and feed in 0.5s chunks to simulate streaming
+    auto config = parakeet::make_eou_120m_config();
+    parakeet::StreamingTranscriber t(argv[1], argv[2], config);
     auto audio = parakeet::read_audio(argv[3]);
     const float *data = audio.samples.typed_data<float>();
     int64_t total = audio.samples.shape()[0];

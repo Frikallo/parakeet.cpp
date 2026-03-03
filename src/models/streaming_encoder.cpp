@@ -6,15 +6,24 @@ namespace parakeet::models {
 
 // ─── CausalConformerConvModule ───────────────────────────────────────────────
 
-CausalConformerConvModule::CausalConformerConvModule(int groups,
-                                                     int kernel_size,
-                                                     float dropout)
-    : kernel_size_(kernel_size), pointwise_conv1_(/*stride=*/1),
+CausalConformerConvModule::CausalConformerConvModule(
+    int groups, int kernel_size, float dropout, bool use_layer_norm, bool bias)
+    : kernel_size_(kernel_size), use_layer_norm_(use_layer_norm),
+      pointwise_conv1_(/*stride=*/1, /*padding=*/0, /*dilation=*/1,
+                       /*groups=*/1, /*bias=*/bias),
       depthwise_conv_(/*stride=*/1, /*padding=*/0, /*dilation=*/1,
-                      /*groups=*/groups),
-      pointwise_conv2_(/*stride=*/1), dropout_(dropout) {
-    AX_REGISTER_MODULES(norm_, pointwise_conv1_, depthwise_conv_, batch_norm_,
+                      /*groups=*/groups, /*bias=*/bias),
+      pointwise_conv2_(/*stride=*/1, /*padding=*/0, /*dilation=*/1,
+                       /*groups=*/1, /*bias=*/bias),
+      dropout_(dropout) {
+    AX_REGISTER_MODULES(norm_, pointwise_conv1_, depthwise_conv_,
                         pointwise_conv2_, dropout_);
+    // Register the correct norm type under "batch_norm_" for weight loading
+    if (use_layer_norm_) {
+        register_module("batch_norm_", ln_batch_norm_);
+    } else {
+        register_module("batch_norm_", batch_norm_);
+    }
 }
 
 Tensor CausalConformerConvModule::forward(const Tensor &input) const {
@@ -24,11 +33,18 @@ Tensor CausalConformerConvModule::forward(const Tensor &input) const {
     x = pointwise_conv1_(x);
     x = ops::glu(x, /*dim=*/1);
 
-    // Full-sequence: use symmetric padding (same as non-streaming)
-    int pad = (kernel_size_ - 1) / 2;
-    x = ops::pad(x, {{0, 0}, {0, 0}, {pad, pad}});
+    // Full-sequence: use causal (left-only) padding to match NeMo CausalConv1D
+    int pad = kernel_size_ - 1;
+    x = ops::pad(x, {{0, 0}, {0, 0}, {pad, 0}});
     x = depthwise_conv_(x);
-    x = batch_norm_(x);
+    if (use_layer_norm_) {
+        // LayerNorm on channel dim: (B, C, T) → (B, T, C) → norm → (B, C, T)
+        x = x.permute({0, 2, 1});
+        x = ln_batch_norm_(x);
+        x = x.permute({0, 2, 1});
+    } else {
+        x = batch_norm_(x);
+    }
     x = ops::silu(x);
 
     x = pointwise_conv2_(x);
@@ -67,7 +83,14 @@ Tensor CausalConformerConvModule::forward_cached(const Tensor &input,
                      .ascontiguousarray();
 
     x = depthwise_conv_(x);
-    x = batch_norm_(x);
+    if (use_layer_norm_) {
+        // LayerNorm on channel dim: (B, C, T) → (B, T, C) → norm → (B, C, T)
+        x = x.permute({0, 2, 1});
+        x = ln_batch_norm_(x);
+        x = x.permute({0, 2, 1});
+    } else {
+        x = batch_norm_(x);
+    }
     x = ops::silu(x);
 
     x = pointwise_conv2_(x);
@@ -80,13 +103,15 @@ Tensor CausalConformerConvModule::forward_cached(const Tensor &input,
 // ─── StreamingConformerAttention ─────────────────────────────────────────────
 
 StreamingConformerAttention::StreamingConformerAttention(int num_heads,
-                                                         float dropout)
-    : mha_(num_heads), pos_proj_(false), dropout_(dropout) {
+                                                         float dropout,
+                                                         bool bias)
+    : mha_(num_heads, bias), pos_proj_(false), dropout_(dropout) {
     AX_REGISTER_MODULES(norm_, mha_, pos_proj_, dropout_);
     AX_REGISTER_PARAMETERS(pos_bias_u_, pos_bias_v_);
 }
 
-Tensor StreamingConformerAttention::rel_shift(const Tensor &x) {
+Tensor StreamingConformerAttention::rel_shift(const Tensor &x,
+                                              int64_t num_keys) {
     auto shape = x.shape();
     size_t batch = shape[0];
     size_t heads = shape[1];
@@ -97,8 +122,11 @@ Tensor StreamingConformerAttention::rel_shift(const Tensor &x) {
     padded = padded.reshape({batch, heads, pos_len + 1, seq_len});
     padded = padded.slice({Slice(), Slice(), Slice(1), Slice()});
     padded = padded.reshape({batch, heads, seq_len, pos_len});
-    return padded.slice(
-        {Slice(), Slice(), Slice(), Slice(0, static_cast<int64_t>(seq_len))});
+
+    // For symmetric case (Q == K), num_keys defaults to seq_len.
+    // For asymmetric cached attention (Q < K), num_keys = kv_len.
+    int64_t k = (num_keys > 0) ? num_keys : static_cast<int64_t>(seq_len);
+    return padded.slice({Slice(), Slice(), Slice(), Slice(0, k)});
 }
 
 Tensor StreamingConformerAttention::rel_position_attention(
@@ -138,7 +166,9 @@ Tensor StreamingConformerAttention::rel_position_attention(
     auto scores = (content_score + pos_score) * scale;
 
     if (mask.storage()) {
-        scores = ops::masked_fill(scores, mask, -1e9f);
+        scores = scores.ascontiguousarray();
+        auto bool_mask = mask.astype(axiom::DType::Bool);
+        scores = ops::masked_fill(scores, bool_mask, -1e9f);
     }
 
     auto attn_weights = ops::softmax(scores, -1);
@@ -214,22 +244,23 @@ Tensor StreamingConformerAttention::forward_cached(
     // Content attention
     auto content_score = ops::matmul(q + bias_u, k, false, true);
 
-    // Position attention
-    auto p = pos_proj_(pos_emb);
-    auto pos_len = p.shape()[0];
+    // Position attention — generate pos_emb for actual kv_len and apply
+    // rel_shift. sinusoidal_position_embedding(kv_len) produces (2*kv_len-1)
+    // relative position embeddings. The rel_shift with num_keys=kv_len
+    // correctly extracts the (chunk_len, kv_len) relative position score
+    // matrix.
+    auto pos_emb_local =
+        sinusoidal_position_embedding(static_cast<int>(kv_len), d_model);
+    if (q.dtype() != axiom::DType::Float32)
+        pos_emb_local = pos_emb_local.astype(q.dtype());
+    if (q.device() != pos_emb_local.device())
+        pos_emb_local = pos_emb_local.to(q.device());
+
+    auto p = pos_proj_(pos_emb_local);
+    auto pos_len = p.shape()[0]; // 2*kv_len - 1
     p = p.reshape({1, pos_len, nh, hd}).transpose({0, 2, 1, 3});
     auto pos_score = ops::matmul(q + bias_v, p, false, true);
-
-    // For cached attention, we need to handle the position scores differently
-    // Slice to match kv_len if needed
-    if (pos_score.shape()[3] > kv_len) {
-        // Take the rightmost kv_len columns
-        int start =
-            static_cast<int>(pos_score.shape()[3]) - static_cast<int>(kv_len);
-        pos_score = pos_score.slice(
-            {Slice(), Slice(), Slice(),
-             Slice(start, static_cast<int64_t>(pos_score.shape()[3]))});
-    }
+    pos_score = rel_shift(pos_score, static_cast<int64_t>(kv_len));
 
     auto scores = (content_score + pos_score) * scale;
 
@@ -257,7 +288,11 @@ Tensor StreamingConformerAttention::forward_cached(
             true);
         if (scores.device() != axiom::Device::CPU)
             attn_mask = attn_mask.to(scores.device());
-        scores = ops::masked_fill(scores, attn_mask, -1e9f);
+        // Ensure scores is contiguous before masked_fill (avoids null-storage
+        // view issues with complex broadcast chains)
+        scores = scores.ascontiguousarray();
+        auto bool_mask = attn_mask.astype(axiom::DType::Bool);
+        scores = ops::masked_fill(scores, bool_mask, -1e9f);
     }
 
     auto attn_weights = ops::softmax(scores, -1);
@@ -275,10 +310,11 @@ Tensor StreamingConformerAttention::forward_cached(
 
 StreamingConformerBlock::StreamingConformerBlock(
     const StreamingEncoderConfig &config)
-    : config_(config), ffn1_(config.dropout),
-      attn_(config.num_heads, config.dropout),
-      conv_(config.hidden_size, config.conv_kernel_size, config.dropout),
-      ffn2_(config.dropout) {
+    : config_(config), ffn1_(config.dropout, !config.encoder_no_bias),
+      attn_(config.num_heads, config.dropout, !config.encoder_no_bias),
+      conv_(config.hidden_size, config.conv_kernel_size, config.dropout,
+            config.conv_layer_norm, !config.encoder_no_bias),
+      ffn2_(config.dropout, !config.encoder_no_bias) {
     AX_REGISTER_MODULES(ffn1_, attn_, conv_, ffn2_, final_norm_);
 }
 
@@ -309,16 +345,24 @@ Tensor StreamingConformerBlock::forward_cached(const Tensor &input,
 
 // ─── CausalConvSubsampling ──────────────────────────────────────────────────
 
+static std::array<int, 2> subsampling_pad(bool causal) {
+    return causal ? std::array<int, 2>{0, 0} : std::array<int, 2>{1, 1};
+}
+
 CausalConvSubsampling::CausalConvSubsampling(int channels,
-                                             SubsamplingActivation act)
-    : conv1_(/*stride=*/{2, 2}, /*padding=*/{1, 1}),
-      dw1_(/*stride=*/{2, 2}, /*padding=*/{1, 1}, /*dilation=*/{1, 1},
-           /*groups=*/channels),
-      dw2_(/*stride=*/{2, 2}, /*padding=*/{1, 1}, /*dilation=*/{1, 1},
-           /*groups=*/channels),
+                                             SubsamplingActivation act,
+                                             bool causal_conv2d_padding)
+    : conv1_(/*stride=*/{2, 2},
+             /*padding=*/subsampling_pad(causal_conv2d_padding)),
+      dw1_(/*stride=*/{2, 2},
+           /*padding=*/subsampling_pad(causal_conv2d_padding),
+           /*dilation=*/{1, 1}, /*groups=*/channels),
+      dw2_(/*stride=*/{2, 2},
+           /*padding=*/subsampling_pad(causal_conv2d_padding),
+           /*dilation=*/{1, 1}, /*groups=*/channels),
       conv2_(/*stride=*/{1, 1}, /*padding=*/{0, 0}),
       conv3_(/*stride=*/{1, 1}, /*padding=*/{0, 0}), proj_(true),
-      activation_(act) {
+      activation_(act), causal_padding_(causal_conv2d_padding) {
     AX_REGISTER_MODULES(conv1_, dw1_, conv2_, dw2_, conv3_, proj_);
 }
 
@@ -327,13 +371,22 @@ Tensor CausalConvSubsampling::forward(const Tensor &input) const {
         return activation_ == SubsamplingActivation::ReLU ? ops::relu(t)
                                                           : ops::silu(t);
     };
+
+    // NeMo CausalConv2D: pad(left=kernel-1, right=stride-1) on both dims
+    // kernel=3, stride=2 → pad(2, 1, 2, 1) in (H, W) format
+    auto causal_pad = [this](const Tensor &t) {
+        if (!causal_padding_)
+            return t;
+        return ops::pad(t, {{0, 0}, {0, 0}, {2, 1}, {2, 1}});
+    };
+
     auto x = input.unsqueeze(1);
-    x = conv1_(x);
+    x = conv1_(causal_pad(x));
     x = act(x);
-    x = dw1_(x);
+    x = dw1_(causal_pad(x));
     x = conv2_(x);
     x = act(x);
-    x = dw2_(x);
+    x = dw2_(causal_pad(x));
     x = conv3_(x);
     x = act(x);
 
@@ -389,7 +442,8 @@ Tensor CausalConvSubsampling::forward_cached(const Tensor &input,
 StreamingFastConformerEncoder::StreamingFastConformerEncoder(
     const StreamingEncoderConfig &config)
     : config_(config),
-      subsampling_(config.subsampling_channels, config.subsampling_activation) {
+      subsampling_(config.subsampling_channels, config.subsampling_activation,
+                   config.causal_conv2d_padding) {
     for (int i = 0; i < config.num_layers; ++i) {
         layers_.emplace_back<StreamingConformerBlock>(config);
     }
@@ -451,18 +505,10 @@ Tensor StreamingFastConformerEncoder::forward_chunk(const Tensor &input,
     }
 
     int chunk_len = static_cast<int>(x.shape()[1]);
-    int d_model = static_cast<int>(x.shape()[2]);
 
-    // Generate position embeddings for this chunk
-    // For streaming, we need positions relative to the current chunk + cache
-    int total_context = config_.att_context_left + chunk_len;
-    auto pos_emb = sinusoidal_position_embedding(total_context, d_model);
-    if (x.dtype() != pos_emb.dtype()) {
-        pos_emb = pos_emb.astype(x.dtype());
-    }
-    if (x.device() != pos_emb.device()) {
-        pos_emb = pos_emb.to(x.device());
-    }
+    // Position embeddings are generated inside each layer's forward_cached
+    // based on the actual kv_len (cache + current chunk). Pass empty tensor.
+    Tensor pos_emb;
 
     // Process through each layer
     int layer_idx = 0;
