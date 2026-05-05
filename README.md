@@ -87,7 +87,7 @@ pip install safetensors torch
 python scripts/convert_nemo.py parakeet-tdt_ctc-110m.nemo -o model.safetensors
 ```
 
-The converter supports all model types: `110m-tdt-ctc` (default), `600m-tdt`, `eou-120m`, `nemotron-600m`, `sortformer`.
+The converter auto-detects the model type by default. It also supports explicit model types: `110m-tdt-ctc`, `600m-tdt`, `eou-120m`, `nemotron-600m`, `sortformer`.
 
 ```bash
 python scripts/convert_nemo.py checkpoint.nemo -o model.safetensors --model 600m-tdt
