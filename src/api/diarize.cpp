@@ -75,8 +75,8 @@ void DiarizedTranscriber::to_half() {
 
 void DiarizedTranscriber::enable_vad(const std::string &vad_weights_path) {
     vad_ = std::make_unique<audio::SileroVAD>(vad_weights_path);
-    if (use_fp16_)
-        vad_->to_half();
+    // See Transcriber::enable_vad — casting the VAD to fp16 mixes an fp32
+    // context buffer with fp16 weights and aborts under MPSGraph.
     if (use_gpu_)
         vad_->to_gpu();
 }

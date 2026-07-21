@@ -492,8 +492,12 @@ class Transcriber {
     /// Enable VAD preprocessing. Call after to_half()/to_gpu().
     void enable_vad(const std::string &vad_weights_path) {
         vad_ = std::make_unique<audio::SileroVAD>(vad_weights_path);
-        if (use_fp16_)
-            vad_->to_half();
+        // The VAD deliberately stays fp32 even when the ASR model is fp16.
+        // SileroVAD::to_half() casts the weights but leaves the context
+        // buffer, LSTM state and audio input fp32, which aborts the process
+        // under MPSGraph ('mps.add' requires the same element type). The VAD
+        // is a ~1.2 MB preprocessor that only emits segment boundaries, so
+        // running it in fp32 costs almost nothing.
         if (use_gpu_)
             vad_->to_gpu();
     }
@@ -841,8 +845,12 @@ class TDTTranscriber {
     /// Enable VAD preprocessing. Call after to_half()/to_gpu().
     void enable_vad(const std::string &vad_weights_path) {
         vad_ = std::make_unique<audio::SileroVAD>(vad_weights_path);
-        if (use_fp16_)
-            vad_->to_half();
+        // The VAD deliberately stays fp32 even when the ASR model is fp16.
+        // SileroVAD::to_half() casts the weights but leaves the context
+        // buffer, LSTM state and audio input fp32, which aborts the process
+        // under MPSGraph ('mps.add' requires the same element type). The VAD
+        // is a ~1.2 MB preprocessor that only emits segment boundaries, so
+        // running it in fp32 costs almost nothing.
         if (use_gpu_)
             vad_->to_gpu();
     }
